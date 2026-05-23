@@ -856,6 +856,155 @@ def kem_decapsulate(payload: KemDecapsulateRequest) -> dict[str, Any]:
     }
 
 
+class DemoFireRequest(BaseModel):
+    prompt: str
+    provider: str | None = None
+
+
+_LLM_TOOLS = [
+    {"name": "book_meeting", "params": {"with": "string", "date": "ISO date", "duration_min": "integer"}},
+    {"name": "send_email", "params": {"to": "email", "subject": "string", "body": "string"}},
+    {"name": "summarize", "params": {"source": "string", "length": "short|medium|long"}},
+    {"name": "search_kb", "params": {"query": "string"}},
+    {"name": "set_reminder", "params": {"when": "ISO datetime", "what": "string"}},
+    {"name": "draft_reply", "params": {"to": "string", "body": "string"}},
+    {"name": "fetch_document", "params": {"doc_id": "string"}},
+]
+_LLM_SYSTEM = (
+    "You are an AI assistant that picks ONE tool call to fulfill a user request. "
+    'Respond with ONLY a JSON object {"name": <tool>, "params": {...}}. '
+    "Available tools: " + json.dumps(_LLM_TOOLS)
+)
+
+
+def _resolve_demo_provider() -> str | None:
+    pref = os.environ.get("SIGNET_LLM_PROVIDER")
+    if pref in ("openai", "gemini") and os.environ.get(f"{pref.upper()}_API_KEY"):
+        return pref
+    if os.environ.get("GEMINI_API_KEY"):
+        return "gemini"
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    return None
+
+
+def _extract_action_json(text: str) -> dict[str, Any]:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:].lstrip()
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                return json.loads(text[start : i + 1])
+    raise ValueError(f"no JSON in LLM response: {text!r}")
+
+
+def _plan_with_llm(prompt: str, provider: str) -> dict[str, Any]:
+    import httpx as _httpx
+    if provider == "openai":
+        key = os.environ["OPENAI_API_KEY"]
+        r = _httpx.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "content-type": "application/json"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": _LLM_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=30.0,
+        )
+        r.raise_for_status()
+        text = r.json()["choices"][0]["message"]["content"]
+    else:
+        key = os.environ["GEMINI_API_KEY"]
+        model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        r = _httpx.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            params={"key": key},
+            headers={"content-type": "application/json"},
+            json={
+                "systemInstruction": {"parts": [{"text": _LLM_SYSTEM}]},
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
+            },
+            timeout=30.0,
+        )
+        r.raise_for_status()
+        text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    body = _extract_action_json(text)
+    name = body.get("name") or body.get("tool") or "noop"
+    params = body.get("params") or body.get("arguments") or {}
+    return {"type": "tool_call", "name": name, "params": params, "planner": provider}
+
+
+def _get_demo_identity(request: Request):
+    from signet import Identity as _SDKIdentity
+    if getattr(app.state, "demo_identity", None) is None:
+        tenant_id = _tenant_of(request)
+        ident = _SDKIdentity.generate(principal_id="prn_demo_button")
+        db.upsert_agent(
+            app.state.db,
+            agent_id=ident.agent_id,
+            principal_id=ident.principal_id,
+            algorithm=ident.algorithm,
+            public_key=ident.public_key,
+            tenant_id=tenant_id,
+            hybrid_classical="Ed25519",
+            hybrid_public_key=ident.ed25519_public,
+        )
+        app.state.demo_identity = ident
+    return app.state.demo_identity
+
+
+@app.post("/v1/demo/llm-fire")
+async def demo_llm_fire(payload: DemoFireRequest, request: Request) -> dict[str, Any]:
+    provider = payload.provider or _resolve_demo_provider()
+    if not provider:
+        raise HTTPException(
+            400,
+            "no LLM provider configured — set OPENAI_API_KEY or GEMINI_API_KEY in the verifier environment",
+        )
+    identity = _get_demo_identity(request)
+    import asyncio as _asyncio
+    from signet import Envelope as _SDKEnvelope
+    try:
+        action = await _asyncio.get_running_loop().run_in_executor(
+            None, _plan_with_llm, payload.prompt, provider
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"llm planner failed: {exc}")
+
+    sdk_env = _SDKEnvelope(
+        agent_id=identity.agent_id,
+        principal_id=identity.principal_id,
+        action=action,
+    )
+    sdk_env.sign(identity)
+    env_dict = sdk_env.to_dict()
+    env = Envelope(**env_dict)
+    verdict = await submit_envelope(env, request)
+    return {
+        "envelope_id": env.envelope_id,
+        "agent_id": identity.agent_id,
+        "provider": provider,
+        "action": action,
+        "verdict": verdict.model_dump(),
+    }
+
+
 @app.websocket("/ws/stream")
 async def ws_stream(ws: WebSocket) -> None:
     await app.state.hub.connect(ws)
