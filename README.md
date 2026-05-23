@@ -63,14 +63,19 @@ JSON document signed with ML-DSA-44 (FIPS 204).
 
 ### Python SDK (`sdk-python/`)
 
-- `Identity.generate()` — ML-DSA-44 keypair via `liboqs-python`
-- `Envelope.sign(identity)` — canonical JSON signing (sorted-keys, no
-  whitespace) with a 2420-byte ML-DSA-44 signature
-- `verify_signature()` — standalone signature verification
-- `register(identity, verifier_url)` — agent public-key registration
-- `submit(envelope, verifier_url)` — sign + ship to verifier
-- `verify(envelope, verifier_url)` — remote verify without persistence
-- `revoke(agent_id, verifier_url)` — propagate revocation
+- `Identity.generate()` — paired ML-DSA-44 (liboqs) + Ed25519 (cryptography)
+  keypair generation
+- `Envelope.sign(identity, hybrid=True)` — canonical JSON signing
+  (sorted-keys, no whitespace) producing the ML-DSA-44 signature and, by
+  default, an Ed25519 hybrid signature alongside it
+- `verify_signature()` / `verify_classical()` — standalone verification of
+  either signature scheme
+- `register(identity)` — agent registration including both public keys
+- `submit(envelope)` — verify + log + score + broadcast in one call
+- `verify(envelope)` — remote verify without persistence
+- `revoke(agent_id, reason)` — propagate revocation
+- `audit(agent_id=None, limit=100)` — paginated envelope log
+- `get_agent(agent_id)` / `get_envelope(envelope_id)` — direct lookups
 - `@wrap(identity, capabilities=[...])` — decorator that signs and submits
   every return value of a Python agent function
 - `delegate(parent, capabilities, ttl)` — issue capability-scoped child
@@ -78,17 +83,21 @@ JSON document signed with ML-DSA-44 (FIPS 204).
 
 ### Verifier service (`verifier/`)
 
-- FastAPI 0.115 application
-- ML-DSA-44 signature verification through `liboqs-python` (Dilithium2 alias
-  supported for older liboqs builds)
+- FastAPI application with auto-published OpenAPI 3.1 schema
+- ML-DSA-44 verification through `liboqs-python` (Dilithium2 alias supported
+  for older liboqs builds)
+- Ed25519 hybrid co-verification through `cryptography` — both signatures
+  required when the agent registers a classical key
 - SQLite envelope log (`signet.db`, WAL mode, indexed on agent_id and
-  received_at)
-- Identity registry — public key, principal, algorithm, revocation timestamp
-- In-DB revocation with sub-second propagation to all subscribers
-- WebSocket live stream (`/ws/stream`) — broadcasts every accepted envelope and
-  revocation event to the dashboard
+  received_at) with idempotent schema migration
+- Identity registry — PQ + classical public keys, principal, algorithm,
+  revocation timestamp and reason
+- In-DB revocation with sub-second propagation through the WebSocket hub
+- LRU nonce replay cache (4096 entries per process)
+- Expiry validation on every envelope
+- WebSocket live stream (`/ws/stream`) — broadcasts every accepted envelope
+  and revocation event to the dashboard
 - Quantum-kernel anomaly detector — trains on boot, scores every submission
-- Expiry / nonce / replay checks
 - CORS-configurable, `.env`-driven
 
 ### Quantum anomaly detector (`verifier/signet_verifier/anomaly.py`)
@@ -328,13 +337,15 @@ Subsequent submissions return `Verdict(valid=False, reason="revoked")`.
 | Method | Endpoint                          | Purpose                                     |
 | ------ | --------------------------------- | ------------------------------------------- |
 | GET    | `/health`                         | Liveness check                              |
-| POST   | `/v1/identities`                  | Register an agent's ML-DSA-44 public key    |
+| POST   | `/v1/identities`                  | Register an agent's PQ + classical pubkeys  |
 | POST   | `/v1/envelopes/verify`            | Stateless verify (no log, no broadcast)     |
 | POST   | `/v1/envelopes/submit`            | Verify + log + score + broadcast            |
+| GET    | `/v1/envelopes/{envelope_id}`     | Fetch a single envelope by ID               |
 | POST   | `/v1/anomaly/score`               | Score an envelope against the agent window  |
 | GET    | `/v1/anomaly/report`              | Quantum vs RBF AUC report card              |
 | POST   | `/v1/agents/{agent_id}/revoke`    | Revoke an agent                             |
 | GET    | `/v1/agents`                      | List registered agents                      |
+| GET    | `/v1/agents/{agent_id}`           | Fetch agent metadata (keys stripped)        |
 | GET    | `/v1/audit?limit=N&agent_id=...`  | Paginated envelope log                      |
 | WS     | `/ws/stream`                      | Live envelope and revocation event stream   |
 
@@ -363,14 +374,18 @@ signature over every field except `signature`. Full schema in PRD §8.3.
     "params": { "date": "2026-05-24", "attendees": ["x@y.com"] }
   },
   "signature": {
-    "algorithm": "ML-DSA-44",
-    "value":     "<base64 2420-byte signature>"
+    "algorithm":              "ML-DSA-44",
+    "value":                  "<base64 2420-byte ML-DSA-44 signature>",
+    "hybrid_classical":       "Ed25519",
+    "hybrid_classical_value": "<base64 64-byte Ed25519 signature>"
   }
 }
 ```
 
-Hybrid Ed25519 + ML-DSA-44 dual signatures are specified for the
-2027–2033 migration window; the Phase 0 implementation ships ML-DSA-44 only.
+Envelopes are hybrid-signed by default — Ed25519 + ML-DSA-44 concatenation per
+CNSA 2.0 hybrid guidance. The verifier requires both signatures valid when the
+agent is registered with a classical public key, and falls back to ML-DSA-44
+only when the agent registered without one.
 
 ---
 
