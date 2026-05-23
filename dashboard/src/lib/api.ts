@@ -3,6 +3,27 @@ export const VERIFIER_HTTP =
 export const VERIFIER_WS =
   process.env.NEXT_PUBLIC_VERIFIER_WS ?? "ws://127.0.0.1:8000/ws/stream";
 
+const API_KEY_STORAGE = "signet.apiKey";
+
+export function getApiKey(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(API_KEY_STORAGE);
+}
+
+export function setApiKey(key: string | null): void {
+  if (typeof window === "undefined") return;
+  if (key && key.trim()) {
+    window.localStorage.setItem(API_KEY_STORAGE, key.trim());
+  } else {
+    window.localStorage.removeItem(API_KEY_STORAGE);
+  }
+}
+
+function authHeaders(): HeadersInit {
+  const key = getApiKey();
+  return key ? { "x-api-key": key } : {};
+}
+
 export type Agent = {
   agent_id: string;
   principal_id: string;
@@ -48,7 +69,7 @@ export type StreamEvent =
   | { type: "revocation"; agent_id: string; reason: string };
 
 export async function fetchAgents(): Promise<Agent[]> {
-  const r = await fetch(`${VERIFIER_HTTP}/v1/agents`, { cache: "no-store" });
+  const r = await fetch(`${VERIFIER_HTTP}/v1/agents`, { cache: "no-store", headers: authHeaders() });
   const j = await r.json();
   return j.agents ?? [];
 }
@@ -56,6 +77,7 @@ export async function fetchAgents(): Promise<Agent[]> {
 export async function fetchAudit(limit = 200): Promise<Envelope[]> {
   const r = await fetch(`${VERIFIER_HTTP}/v1/audit?limit=${limit}`, {
     cache: "no-store",
+    headers: authHeaders(),
   });
   const j = await r.json();
   return j.envelopes ?? [];
@@ -64,6 +86,7 @@ export async function fetchAudit(limit = 200): Promise<Envelope[]> {
 export async function fetchAnomalyReport(): Promise<AnomalyReport> {
   const r = await fetch(`${VERIFIER_HTTP}/v1/anomaly/report`, {
     cache: "no-store",
+    headers: authHeaders(),
   });
   return r.json();
 }
@@ -71,7 +94,7 @@ export async function fetchAnomalyReport(): Promise<AnomalyReport> {
 export async function revokeAgent(agent_id: string, reason: string) {
   const r = await fetch(
     `${VERIFIER_HTTP}/v1/agents/${agent_id}/revoke?reason=${encodeURIComponent(reason)}`,
-    { method: "POST" },
+    { method: "POST", headers: authHeaders() },
   );
   return r.json();
 }
@@ -91,7 +114,7 @@ export async function fetchInclusionProof(
 ): Promise<InclusionProof> {
   const r = await fetch(
     `${VERIFIER_HTTP}/v1/envelopes/${envelope_id}/proof`,
-    { cache: "no-store" },
+    { cache: "no-store", headers: authHeaders() },
   );
   if (!r.ok) throw new Error(`proof HTTP ${r.status}`);
   return r.json();
