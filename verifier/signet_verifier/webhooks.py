@@ -25,8 +25,13 @@ async def _post(url: str, payload: dict[str, Any], secret: str | None) -> None:
         pass
 
 
-async def emit(conn, event: str, payload: dict[str, Any]) -> None:
-    targets = db.webhooks_for_event(conn, event)
+async def emit(
+    conn,
+    event: str,
+    payload: dict[str, Any],
+    tenant_id: str | None = None,
+) -> None:
+    targets = db.webhooks_for_event(conn, event, tenant_id=tenant_id)
     if not targets:
         return
     body = {"event": event, **payload}
