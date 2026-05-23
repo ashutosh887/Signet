@@ -75,3 +75,24 @@ export async function revokeAgent(agent_id: string, reason: string) {
   );
   return r.json();
 }
+
+export type InclusionProof = {
+  envelope_id: string;
+  algorithm: string;
+  leaf_hash: string;
+  leaf_index: number;
+  tree_size: number;
+  root: string;
+  proof: { position: "left" | "right"; hash: string }[];
+};
+
+export async function fetchInclusionProof(
+  envelope_id: string,
+): Promise<InclusionProof> {
+  const r = await fetch(
+    `${VERIFIER_HTTP}/v1/envelopes/${envelope_id}/proof`,
+    { cache: "no-store" },
+  );
+  if (!r.ok) throw new Error(`proof HTTP ${r.status}`);
+  return r.json();
+}

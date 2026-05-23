@@ -6,11 +6,13 @@ import {
   Agent,
   AnomalyReport,
   Envelope,
+  InclusionProof,
   StreamEvent,
   VERIFIER_WS,
   fetchAgents,
   fetchAnomalyReport,
   fetchAudit,
+  fetchInclusionProof,
   revokeAgent,
 } from "@/lib/api";
 import {
@@ -53,7 +55,20 @@ export default function Dashboard() {
   const [stream, setStream] = useState<Envelope[]>([]);
   const [report, setReport] = useState<AnomalyReport | null>(null);
   const [connected, setConnected] = useState(false);
+  const [proof, setProof] = useState<InclusionProof | null>(null);
+  const [proofError, setProofError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+
+  const showProof = async (envelope_id: string) => {
+    setProofError(null);
+    try {
+      const p = await fetchInclusionProof(envelope_id);
+      setProof(p);
+    } catch (e) {
+      setProof(null);
+      setProofError((e as Error).message);
+    }
+  };
 
   useEffect(() => {
     fetchAgents().then(setAgents).catch(() => {});
@@ -281,10 +296,16 @@ export default function Dashboard() {
                 )}
                 {stream.map((e) => {
                   const tone = toneOf(e.anomaly_score);
+                  const isValid = e.verdict === "valid";
                   return (
-                    <div
+                    <button
                       key={e.envelope_id + e.received_at}
-                      className="px-4 py-2 border-t border-neutral-800/60 grid grid-cols-12 gap-2 items-center text-sm"
+                      type="button"
+                      onClick={() => isValid && showProof(e.envelope_id)}
+                      disabled={!isValid}
+                      className={`w-full text-left px-4 py-2 border-t border-neutral-800/60 grid grid-cols-12 gap-2 items-center text-sm transition-colors ${
+                        isValid ? "hover:bg-neutral-800/30" : "opacity-70"
+                      }`}
                     >
                       <span className="col-span-2 mono text-[11px] text-neutral-500">
                         {timeOnly(e.received_at)}
@@ -296,7 +317,7 @@ export default function Dashboard() {
                         {e.action?.name ?? "—"}
                       </span>
                       <span className="col-span-2">
-                        <Badge tone={e.verdict === "valid" ? "ok" : "bad"}>
+                        <Badge tone={isValid ? "ok" : "bad"}>
                           {e.verdict}
                           {e.reason ? `:${e.reason}` : ""}
                         </Badge>
@@ -308,7 +329,7 @@ export default function Dashboard() {
                             : e.anomaly_score.toFixed(3)}
                         </Badge>
                       </span>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -316,6 +337,88 @@ export default function Dashboard() {
           </Card>
         </div>
       </section>
+
+      {(proof || proofError) && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => {
+            setProof(null);
+            setProofError(null);
+          }}
+        >
+          <div
+            className="bg-neutral-950 border border-neutral-800 rounded-lg max-w-2xl w-full p-5 mono text-xs"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="text-sm text-neutral-200">
+                Merkle inclusion proof
+              </h3>
+              <button
+                type="button"
+                className="text-neutral-500 hover:text-neutral-200"
+                onClick={() => {
+                  setProof(null);
+                  setProofError(null);
+                }}
+              >
+                close
+              </button>
+            </div>
+            {proofError && (
+              <div className="text-rose-400">error: {proofError}</div>
+            )}
+            {proof && (
+              <div className="flex flex-col gap-2 text-neutral-300">
+                <div>
+                  <span className="text-neutral-500">envelope_id:</span>{" "}
+                  {proof.envelope_id}
+                </div>
+                <div>
+                  <span className="text-neutral-500">algorithm:</span>{" "}
+                  {proof.algorithm}
+                </div>
+                <div>
+                  <span className="text-neutral-500">leaf_index:</span>{" "}
+                  {proof.leaf_index}{" "}
+                  <span className="text-neutral-500">/ tree_size:</span>{" "}
+                  {proof.tree_size}
+                </div>
+                <div className="break-all">
+                  <span className="text-neutral-500">leaf_hash:</span>{" "}
+                  {proof.leaf_hash}
+                </div>
+                <div className="break-all">
+                  <span className="text-neutral-500">root:</span> {proof.root}
+                </div>
+                <div className="text-neutral-500 mt-1">proof path:</div>
+                <ol className="flex flex-col gap-1">
+                  {proof.proof.length === 0 && (
+                    <li className="text-neutral-500">
+                      (single-leaf tree — leaf == root)
+                    </li>
+                  )}
+                  {proof.proof.map((step, i) => (
+                    <li key={i} className="break-all">
+                      <span className="text-neutral-500">{i}:</span>{" "}
+                      <span
+                        className={
+                          step.position === "left"
+                            ? "text-indigo-300"
+                            : "text-emerald-300"
+                        }
+                      >
+                        {step.position}
+                      </span>{" "}
+                      {step.hash}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }
