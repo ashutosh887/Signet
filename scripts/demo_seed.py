@@ -30,12 +30,10 @@ LEGIT_ACTIONS = (
 )
 
 BORDERLINE_ACTIONS = (
-    ("fetch_document", {"doc_id": "doc_" + "x" * 200}),
-    ("search_kb",      {"query": "select * from " + ", ".join(f"t{i}" for i in range(40))}),
-    ("send_email",     {"to": "external-vendor@third.party",
-                        "subject": "re: confidential", "body": "x" * 3000,
-                        "attachments": [f"a{i}.pdf" for i in range(15)]}),
-    ("summarize",      {"source": "x" * 5000, "length": "long"}),
+    ("bulk_export",        {"rows": 25000, "format": "csv"}),
+    ("download_attachment",{"size_mb": 480}),
+    ("unusual_query",      {"sql": "select * from accounts"}),
+    ("external_webhook",   {"url": "https://third.party/ingest"}),
 )
 
 ROGUE_ACTIONS = (
@@ -122,8 +120,9 @@ def main() -> None:
     for _ in range(args.warmup):
         for a in legit:
             _submit(a, *random.choice(LEGIT_ACTIONS), V)
-        _submit(borderline, *random.choice(LEGIT_ACTIONS), V)
-    print(f"  {args.warmup * (len(legit) + 1)} envelopes submitted")
+    # borderline agent gets NO warmup — its short history of out-of-vocab actions
+    # is what pushes its anomaly score up
+    print(f"  {args.warmup * len(legit)} envelopes submitted")
 
     print(f"\n[4/5] visible legit traffic: {args.show} envelopes per legit agent")
     for _ in range(args.show):
