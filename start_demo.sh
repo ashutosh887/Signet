@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Signet — one-shot launcher for the live demo.
 #
-#   ./start_demo.sh           # full demo: trained anomaly, dashboard, seeded
-#   ./start_demo.sh --fast    # skip anomaly training (instant boot, scores will be 0)
-#   ./start_demo.sh --no-seed # skip the demo seed (empty dashboard)
+#   ./start_demo.sh            # full demo: trained anomaly, dashboard, seeded
+#   ./start_demo.sh --fast     # skip anomaly training (instant boot, scores will be 0)
+#   ./start_demo.sh --no-seed  # skip the demo seed (empty dashboard)
+#   ./start_demo.sh --gateway  # also start the edge gateway on :8001 for the ESP32-S3
 #
 # Definitive ports:
 #   Verifier  http://localhost:8000   (REST + /metrics + /openapi + ws://localhost:8000/ws/stream)
 #   Dashboard http://localhost:3000
+#   Gateway   http://localhost:8001   (only when --gateway is passed)
 
 set -euo pipefail
 
@@ -16,17 +18,21 @@ cd "$ROOT"
 
 VERIFIER_PORT=8000
 DASHBOARD_PORT=3000
+GATEWAY_PORT=8001
 DB_PATH="/tmp/signet_demo.db"
 VERIFIER_LOG="/tmp/signet_demo_verifier.log"
 DASHBOARD_LOG="/tmp/signet_demo_dashboard.log"
+GATEWAY_LOG="/tmp/signet_demo_gateway.log"
 
 FAST=0
 SEED=1
+GATEWAY=0
 for arg in "$@"; do
   case "$arg" in
     --fast)    FAST=1 ;;
     --no-seed) SEED=0 ;;
-    -h|--help) sed -n '1,12p' "$0"; exit 0 ;;
+    --gateway) GATEWAY=1 ;;
+    -h|--help) sed -n '1,14p' "$0"; exit 0 ;;
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
@@ -38,12 +44,14 @@ bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 
 VERIFIER_PID=
 DASHBOARD_PID=
+GATEWAY_PID=
 
 cleanup() {
   echo
   yellow "==> stopping Signet demo"
   [ -n "$VERIFIER_PID" ]  && kill "$VERIFIER_PID"  2>/dev/null || true
   [ -n "$DASHBOARD_PID" ] && kill "$DASHBOARD_PID" 2>/dev/null || true
+  [ -n "$GATEWAY_PID" ]   && kill "$GATEWAY_PID"   2>/dev/null || true
   wait 2>/dev/null || true
   exit 0
 }
@@ -118,6 +126,7 @@ yellow "==> starting dashboard on :$DASHBOARD_PORT"
   cd dashboard
   NEXT_PUBLIC_VERIFIER_HTTP="http://localhost:$VERIFIER_PORT" \
   NEXT_PUBLIC_VERIFIER_WS="ws://localhost:$VERIFIER_PORT/ws/stream" \
+  NEXT_PUBLIC_FIRMWARE_PATH="$ROOT/firmware" \
     "$NEXT_BIN" dev --port "$DASHBOARD_PORT" > "$DASHBOARD_LOG" 2>&1
 ) &
 DASHBOARD_PID=$!
@@ -134,6 +143,29 @@ for i in $(seq 1 120); do
   fi
   sleep 0.5
 done
+
+# --- edge gateway --------------------------------------------------------
+if [ $GATEWAY -eq 1 ]; then
+  yellow "==> starting edge gateway on :$GATEWAY_PORT (listening on 0.0.0.0 for the ESP32-S3)"
+  SIGNET_VERIFIER="http://127.0.0.1:$VERIFIER_PORT" \
+    "$VENV_PY" "$ROOT/scripts/edge_gateway.py" \
+    --host 0.0.0.0 --port "$GATEWAY_PORT" \
+    --verifier "http://127.0.0.1:$VERIFIER_PORT" \
+    > "$GATEWAY_LOG" 2>&1 &
+  GATEWAY_PID=$!
+  for i in $(seq 1 40); do
+    if curl -sf "http://127.0.0.1:$GATEWAY_PORT/health" >/dev/null; then
+      green "    gateway ready (pid $GATEWAY_PID) — logs: $GATEWAY_LOG"
+      break
+    fi
+    if ! kill -0 "$GATEWAY_PID" 2>/dev/null; then
+      red "    gateway process died — see $GATEWAY_LOG"
+      tail -40 "$GATEWAY_LOG" || true
+      cleanup
+    fi
+    sleep 0.5
+  done
+fi
 
 # --- demo seed -----------------------------------------------------------
 if [ $SEED -eq 1 ]; then
