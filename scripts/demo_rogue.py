@@ -80,7 +80,7 @@ def _llm_action() -> dict | None:
         return None
 
 
-def _fire(identity: Identity, *, rogue: bool) -> dict:
+def _fire(identity: Identity, *, rogue: bool, use_llm: bool = True) -> dict:
     if rogue:
         name = random.choice(ROGUE_ACTIONS)
         params = {
@@ -89,7 +89,7 @@ def _fire(identity: Identity, *, rogue: bool) -> dict:
         }
         action = {"type": "tool_call", "name": name, "params": params}
     else:
-        llm = _llm_action()
+        llm = _llm_action() if use_llm else None
         if llm is not None:
             action = llm
         else:
@@ -127,7 +127,7 @@ def main() -> None:
     print("Silent warm-up: each legit agent fires 22 envelopes to fill the window.")
     for _ in range(22):
         for a in legit:
-            _fire(a, rogue=False)
+            _fire(a, rogue=False, use_llm=False)  # canned for speed; window is just for feature stats
     print(f"  warm-up envelopes submitted: {22 * len(legit)}\n")
 
     print("Legit agents at steady-state — 3 envelopes each:")
