@@ -22,7 +22,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/_oqs
-          key: liboqs-0.15.0-${{ runner.os }}
+          key: liboqs-0.15.0-slhdsa-${{ runner.os }}
 
       - name: Build liboqs
         if: steps.liboqs-cache.outputs.cache-hit != 'true'
@@ -32,7 +32,7 @@ jobs:
           git clone --branch 0.15.0 --depth 1 https://github.com/open-quantum-safe/liboqs.git /tmp/liboqs
           cmake -G Ninja -S /tmp/liboqs -B /tmp/liboqs/build \
             -DBUILD_SHARED_LIBS=ON -DOQS_BUILD_ONLY_LIB=ON \
-            -DOQS_MINIMAL_BUILD="SIG_ml_dsa_44;KEM_ml_kem_768" \
+            -DOQS_MINIMAL_BUILD="SIG_ml_dsa_44;SIG_sphincs_sha2_128s_simple;KEM_ml_kem_768" \
             -DCMAKE_INSTALL_PREFIX=$HOME/_oqs -DCMAKE_BUILD_TYPE=Release
           cmake --build /tmp/liboqs/build --parallel
           cmake --install /tmp/liboqs/build
