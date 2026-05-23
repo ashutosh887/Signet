@@ -1,0 +1,26 @@
+[project]
+name = "signet-verifier"
+version = "0.1.0"
+description = "Signet verifier — post-quantum signed agent action envelopes"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.118",
+  "uvicorn[standard]>=0.37",
+  "pydantic>=2.13",
+  "liboqs-python>=0.15",
+  "pennylane>=0.45",
+  "scikit-learn>=1.8",
+  "numpy>=2.1",
+  "python-dotenv>=1.1",
+  "websockets>=15",
+  "cryptography>=43",
+  "prometheus-client>=0.21",
+  "httpx>=0.28",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["signet_verifier"]
