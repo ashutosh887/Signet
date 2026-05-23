@@ -2,15 +2,25 @@ from __future__ import annotations
 
 import argparse
 import base64
+import os
 import random
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sdk-python"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "sdk-python"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx
 from signet import Envelope, Identity
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / ".env")
+except Exception:
+    pass
 
 
 LEGIT_ACTIONS = (
@@ -26,6 +36,42 @@ LEGIT_ACTIONS = (
     ("search_kb",     {"query": "on-call runbook"}),
     ("set_reminder",  {"when": "2026-05-24T09:00:00Z", "what": "Review standup notes"}),
 )
+
+LLM_PROMPTS = (
+    "Schedule a 30-minute meeting with Akash on Monday at 4pm",
+    "Send an email to ops@acme.test letting them know the Q2 deploy is green",
+    "Summarise the Q2 OKR document in two sentences",
+    "Search the internal knowledge base for the on-call runbook",
+    "Set a reminder for tomorrow morning to review the standup notes",
+    "Book a coffee chat with Priya for Thursday at 3pm",
+    "Draft a short reply thanking the team for shipping the migration",
+    "Find the latest version of the security incident response plan",
+)
+
+
+def _resolve_llm_provider() -> str | None:
+    pref = os.environ.get("SIGNET_LLM_PROVIDER")
+    if pref in ("openai", "gemini") and os.environ.get(f"{pref.upper()}_API_KEY"):
+        return pref
+    if os.environ.get("GEMINI_API_KEY"):
+        return "gemini"
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    return None
+
+
+def _plan_batch(prompts: list[str], provider: str, max_workers: int = 6) -> list[dict | None]:
+    from llm_agent import plan_action
+
+    def _one(q: str) -> dict | None:
+        try:
+            return plan_action(q, provider)
+        except Exception as exc:
+            print(f"  (llm plan failed for {q!r}: {exc})")
+            return None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        return list(pool.map(_one, prompts))
 
 BORDERLINE_ACTIONS = (
     ("bulk_export",        {"rows": 25000, "format": "csv"}),
@@ -67,6 +113,18 @@ def _submit(identity: Identity, name: str, params: dict, verifier: str) -> dict:
     return r.json()
 
 
+def _submit_action(identity: Identity, action: dict, verifier: str) -> dict:
+    env = Envelope(
+        agent_id=identity.agent_id,
+        principal_id=identity.principal_id,
+        action=action,
+    )
+    env.sign(identity)
+    r = httpx.post(f"{verifier}/v1/envelopes/submit", json=env.to_dict())
+    r.raise_for_status()
+    return r.json()
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--verifier", default="http://localhost:8000")
@@ -75,6 +133,7 @@ def main() -> None:
     p.add_argument("--show", type=int, default=4, help="visible LEGIT envelopes per agent (varied)")
     p.add_argument("--borderline", type=int, default=4, help="borderline envelopes (suspicious shape)")
     p.add_argument("--rogue", type=int, default=3, help="rogue envelopes (policy-denied)")
+    p.add_argument("--no-llm", action="store_true", help="Force canned visible traffic even if LLM keys are set")
     args = p.parse_args()
 
     V = args.verifier
@@ -122,13 +181,31 @@ def main() -> None:
     # is what pushes its anomaly score up
     print(f"  {args.warmup * len(legit)} envelopes submitted")
 
-    print(f"\n[4/5] visible legit traffic: {args.show} envelopes per legit agent")
-    for _ in range(args.show):
-        for a in legit:
-            v = _submit(a, *random.choice(LEGIT_ACTIONS), V)
+    provider = _resolve_llm_provider() if not args.no_llm else None
+    total_visible = args.show * len(legit)
+    if provider:
+        print(f"\n[4/5] visible legit traffic: {total_visible} envelopes planned by real {provider.upper()} (parallel)")
+        prompts = [random.choice(LLM_PROMPTS) for _ in range(total_visible)]
+        t0 = time.perf_counter()
+        actions = _plan_batch(prompts, provider)
+        dt = time.perf_counter() - t0
+        print(f"  llm planning: {dt:.1f}s for {total_visible} prompts")
+        for idx, action in enumerate(actions):
+            a = legit[idx % len(legit)]
+            if action is None:
+                action = {"type": "tool_call", **dict(zip(("name", "params"), random.choice(LEGIT_ACTIONS)))}
+            v = _submit_action(a, action, V)
+            label = action.get("name", "?")
             score = v.get("anomaly_score")
-            print(f"  legit {a.agent_id[:18]}.. score={score}")
-            time.sleep(0.02)
+            print(f"  legit {a.agent_id[:18]}.. {label:<18} score={score}")
+    else:
+        print(f"\n[4/5] visible legit traffic: {args.show} canned envelopes per legit agent (no LLM key)")
+        for _ in range(args.show):
+            for a in legit:
+                v = _submit(a, *random.choice(LEGIT_ACTIONS), V)
+                score = v.get("anomaly_score")
+                print(f"  legit {a.agent_id[:18]}.. score={score}")
+                time.sleep(0.02)
 
     print(f"\n[5a/5] borderline agent fires {args.borderline} oddly-shaped envelopes (anomaly should rise)")
     for _ in range(args.borderline):
