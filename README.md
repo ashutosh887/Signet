@@ -27,7 +27,13 @@ documents the **Phase 0** hackathon deliverable.
 - [Installation](#installation)
 - [Usage](#usage)
 - [CLI](#cli)
+- [TypeScript SDK](#typescript-sdk)
 - [Verifier API](#verifier-api)
+- [Multi-tenancy](#multi-tenancy)
+- [Policy engine](#policy-engine)
+- [MCP / A2A integration](#mcp--a2a-integration)
+- [Hybrid KEM (ML-KEM-768)](#hybrid-kem-ml-kem-768)
+- [HSM signer abstraction](#hsm-signer-abstraction)
 - [Webhooks](#webhooks)
 - [Merkle audit log](#merkle-audit-log)
 - [Observability](#observability)
@@ -85,7 +91,19 @@ JSON document signed with ML-DSA-44 (FIPS 204).
 - `delegate(parent, capabilities, ttl)` — issue capability-scoped child
   identities with a signed delegation envelope
 - `signet` CLI binary — `keygen / register / sign / verify / submit / revoke
-  / audit / agent / envelope`
+  / audit / agent / envelope / anomaly score / proof / policy {add,list}`
+- `SignetMCPMiddleware` — MCP / A2A tool dispatch wrapped in signed envelopes
+- `Signer` protocol + `SoftwareSigner`, `PKCS11Signer` stub — HSM-routable signing
+- `signet.kem` — hybrid X25519 + ML-KEM-768 helpers (keygen, encapsulate, decapsulate)
+
+### TypeScript SDK (`sdk-ts/`)
+
+- `generateIdentity`, `newEnvelope`, `signEnvelope`, `verifyEnvelope`
+- `register`, `submit`, `verify`, `revoke`, `audit`, `inclusionProof`
+- `canonicalize` — Python-compatible JCS canonical JSON
+- ML-DSA-44 via `@noble/post-quantum`; Ed25519 hybrid via `@noble/curves`
+- Cross-language interop: TS-signed envelopes verify against the Python verifier
+- Vitest test suite + `test/interop.mjs` end-to-end script
 
 ### Verifier service (`verifier/`)
 
@@ -107,9 +125,14 @@ JSON document signed with ML-DSA-44 (FIPS 204).
 - **Merkle audit log** — SHA3-256 leaves, on-demand inclusion proofs,
   client-verifiable root
 - **Webhooks** — HMAC-SHA256-signed callbacks on envelope and anomaly events
+- **Policy engine** — declarative allow/deny rules per tenant, evaluated after
+  the cryptographic check; verdict carries the offending `policy_rule_id`
+- **Hybrid KEM endpoints** — `/v1/kem/{keygen,encapsulate,decapsulate}` for
+  X25519 + ML-KEM-768 session keys
+- **Multi-tenancy** — every agent/envelope/webhook/policy/KEM row carries a
+  `tenant_id`; per-tenant API keys via `SIGNET_API_KEYS` JSON map
 - **Prometheus `/metrics`** — request counters, latency histograms, anomaly
   score distribution
-- **Optional X-API-Key auth** — opt-in via `SIGNET_API_KEYS`
 - Structured JSON logs via `SIGNET_LOG_LEVEL`
 - CORS-configurable, `.env`-driven
 
@@ -187,30 +210,45 @@ Full diagram (Mermaid) in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ```
 signet/
-├── sdk-python/                 Python SDK — Identity, Envelope, CLI
+├── sdk-python/                 Python SDK — Identity, Envelope, CLI, MCP, KEM, HSM
 │   ├── pyproject.toml
 │   └── signet/
-│       ├── identity.py         ML-DSA-44 + Ed25519 keygen, sign, verify
+│       ├── identity.py         ML-DSA-44 + Ed25519 keygen, sign, verify, with_signer
 │       ├── envelope.py         Canonical JSON envelope + hybrid signing
 │       ├── client.py           HTTP client — register/submit/verify/revoke/...
 │       ├── wrap.py             @wrap decorator + delegate()
+│       ├── mcp.py              SignetMCPMiddleware — MCP/A2A tool dispatch
+│       ├── kem.py              ML-KEM-768 hybrid KEM helpers (HTTP-side)
+│       ├── hsm.py              Signer protocol + Software/PKCS11 implementations
 │       └── cli.py              `signet` argparse CLI
+│
+├── sdk-ts/                     TypeScript SDK — cross-language interop
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── src/
+│   │   ├── canonical.ts        JCS-compatible canonical JSON
+│   │   ├── envelope.ts         Identity, sign/verify (ML-DSA-44 + Ed25519)
+│   │   ├── client.ts           fetch-based verifier client
+│   │   └── index.ts            Public exports
+│   └── test/                   Vitest specs + interop.mjs
 │
 ├── verifier/                   FastAPI verifier service
 │   ├── pyproject.toml
 │   └── signet_verifier/
 │       ├── main.py             FastAPI app, endpoints, middleware, metrics
-│       ├── db.py               SQLite schema + accessors + migrations
+│       ├── db.py               SQLite schema + accessors + migrations (tenancy)
 │       ├── anomaly.py          PennyLane quantum kernel + RBF baseline + explain
 │       ├── merkle.py           SHA3-256 Merkle log + inclusion proofs
+│       ├── policy.py           Declarative policy evaluator (allow/deny rules)
+│       ├── kem.py              ML-KEM-768 + X25519 hybrid KEM
 │       ├── webhooks.py         Outbound HMAC-signed event dispatcher
 │       └── stream.py           WebSocket broadcast hub
 │
 ├── dashboard/                  Next.js 16 + Tailwind v4 UI
 │   └── src/
-│       ├── app/                Pages, layout, globals.css
+│       ├── app/                Pages, layout, globals.css, Merkle proof modal
 │       ├── components/         UI primitives
-│       └── lib/api.ts          Verifier REST + WebSocket client
+│       └── lib/api.ts          Verifier REST + WebSocket client + proof fetch
 │
 ├── firmware/                   ESP32-C3 edge agent (ESP-IDF)
 │   ├── CMakeLists.txt
@@ -226,13 +264,19 @@ signet/
 │   ├── test_roundtrip.py       SDK ↔ verifier signed round-trip
 │   ├── test_anomaly.py         Quantum + RBF separation on synthetic data
 │   ├── test_wrap.py            @wrap decorator semantics
-│   └── test_ws_stream.py       WebSocket broadcast
+│   ├── test_ws_stream.py       WebSocket broadcast
+│   ├── test_policy.py          Policy engine evaluation rules
+│   ├── test_merkle.py          Merkle proof verification
+│   ├── test_kem.py             Hybrid KEM round-trip
+│   ├── test_tenancy.py         Multi-tenant DB isolation
+│   ├── test_webhook_hmac.py    Webhook HMAC signature + tenant filter
+│   └── test_cli.py             CLI subcommand surface
 │
 ├── docs/
 │   ├── PRD.md                  Full product spec (25 sections)
 │   ├── ARCHITECTURE.md         System diagram + data flow
 │   ├── QA.md                   12 prepared judge questions + answers
-│   ├── RFC-DRAFT.md            IETF Internet-Draft outline (Phase 4)
+│   ├── RFC-DRAFT.md            IETF Internet-Draft outline
 │   └── benchmark/              Reproducible quantum vs RBF AUC benchmark
 │
 ├── .github/workflows/ci.yml    Build liboqs, install, SDK smoke + round-trip
@@ -362,9 +406,46 @@ signet audit --limit 20
 signet revoke agt_01HXYZ --reason suspected_compromise
 signet agent agt_01HXYZ
 signet envelope env_01HXYZ
+signet anomaly score --envelope env.json
+signet proof env_01HXYZ
+signet policy add --name block-rm --rules ./rules.json
+signet policy list
 ```
 
 All commands accept `--verifier URL` (defaults to `http://localhost:8000`).
+
+---
+
+## TypeScript SDK
+
+```bash
+cd sdk-ts
+pnpm install && pnpm build
+pnpm test                  # vitest
+node test/interop.mjs      # end-to-end TS → Python verifier (verifier must be running)
+```
+
+```ts
+import {
+  generateIdentity, newEnvelope, signEnvelope,
+  register, submit, inclusionProof,
+} from "@signet/sdk";
+
+const id = await generateIdentity("prn_acme_co");
+await register(id, { verifierUrl: "http://localhost:8000" });
+
+const env = newEnvelope(id.agentId, id.principalId, {
+  type: "tool_call", name: "book_meeting", params: { date: "2026-05-24" },
+});
+const verdict = await submit(signEnvelope(env, id), {
+  verifierUrl: "http://localhost:8000",
+});
+const proof = await inclusionProof(env.envelope_id);
+```
+
+Envelopes signed by the TypeScript SDK verify against the Python verifier
+because canonical JSON (sorted keys, no whitespace) is bit-for-bit
+compatible between the two SDKs.
 
 ---
 
@@ -389,10 +470,166 @@ All commands accept `--verifier URL` (defaults to `http://localhost:8000`).
 | POST   | `/v1/webhooks`                          | Register a webhook URL + event filter             |
 | GET    | `/v1/webhooks`                          | List registered webhooks                          |
 | DELETE | `/v1/webhooks/{webhook_id}`             | Remove a webhook                                  |
+| POST   | `/v1/policies`                          | Create a tenant policy (rule list)                |
+| GET    | `/v1/policies`                          | List policies for caller's tenant                 |
+| DELETE | `/v1/policies/{policy_id}`              | Delete a policy                                   |
+| POST   | `/v1/policies/evaluate`                 | Dry-run policy against an action                  |
+| POST   | `/v1/kem/keygen`                        | Generate a hybrid X25519 + ML-KEM-768 keypair     |
+| POST   | `/v1/kem/encapsulate`                   | Encapsulate against a public-key bundle           |
+| POST   | `/v1/kem/decapsulate`                   | Decapsulate using a stored verifier-side secret   |
 | WS     | `/ws/stream`                            | Live envelope and revocation event stream         |
 
 Pydantic models and response schemas are auto-published at `/docs` (Swagger UI)
 and `/openapi.json`.
+
+---
+
+## Multi-tenancy
+
+Every agent, envelope, webhook, policy, and KEM key row carries a
+`tenant_id`. Without configuration, everything lives in the `default`
+tenant — backward-compatible with single-tenant deployments.
+
+Enable per-tenant API keys by setting `SIGNET_API_KEYS` to a JSON map at
+startup:
+
+```bash
+export SIGNET_API_KEYS='{"sk_acme_xxx":"acme","sk_globex_yyy":"globex"}'
+```
+
+The verifier:
+
+- requires `X-API-Key` on all non-public routes (everything outside
+  `/health`, `/metrics`, `/openapi`, `/docs`, `/redoc`, `/ws/stream`)
+- resolves the key to a `tenant_id`
+- filters `/v1/agents`, `/v1/audit`, `/v1/policies`, `/v1/webhooks` to the
+  caller's tenant
+- rejects cross-tenant envelope verify/submit with `reason: tenant_mismatch`
+- enforces the caller's tenant on revocation
+
+A comma-separated key list (no tenant) is also accepted for the legacy
+single-tenant mode.
+
+---
+
+## Policy engine
+
+Declarative allow/deny rules evaluated after the cryptographic check.
+First-match-wins per policy; any policy returning deny blocks the envelope.
+
+```bash
+curl -X POST http://localhost:8000/v1/policies \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: sk_acme_xxx' \
+  -d '{
+    "name": "production-guardrails",
+    "rules": [
+      {"id":"deny_rm","effect":"deny","match":{"action_name":"rm_rf*"},
+       "reason":"destructive_action"},
+      {"id":"cap_high_value","effect":"deny",
+       "match":{"action_name":"transfer","params":{"amount":[10000,20000]}},
+       "reason":"amount_above_limit"},
+      {"id":"allow_rest","effect":"allow"}
+    ]
+  }'
+```
+
+Match fields support glob patterns (`fnmatch`) on `agent_id`, `principal_id`,
+`action_type`, `action_name`, `capability`, and per-key matchers on
+`params`. A blocked envelope returns:
+
+```json
+{
+  "valid": false,
+  "reason": "destructive_action",
+  "policy_rule_id": "deny_rm",
+  "envelope_id": "env_..."
+}
+```
+
+Dry-run an action without submitting via `POST /v1/policies/evaluate`.
+
+---
+
+## MCP / A2A integration
+
+`SignetMCPMiddleware` wraps an MCP-style `(tool_name, params) -> result`
+dispatch so every tool invocation is enveloped, signed, and verified
+before the host executes it. The same interface works for agent-to-agent
+calls.
+
+```python
+from signet import Identity, SignetMCPMiddleware
+
+agent = Identity.generate(principal_id="prn_acme")
+signet.register(agent)
+
+mcp = SignetMCPMiddleware(agent, verifier_url="http://localhost:8000")
+
+def run_tool(name: str, params: dict) -> dict:
+    return {"booked": params["date"]}
+
+outcome = mcp.invoke("book_meeting", {"date": "2026-05-24"}, run_tool)
+# outcome = {envelope_id, verdict, result, executed: bool}
+```
+
+If the verifier rejects the envelope (revocation, expired, policy
+violation, tenant mismatch), `executed` is `False` and the tool is never
+called.
+
+---
+
+## Hybrid KEM (ML-KEM-768)
+
+Session key establishment uses NIST FIPS 203 ML-KEM-768 combined with
+X25519 per the IETF hybrid-KEM draft. The verifier exposes three endpoints
+and the SDK ships matching helpers:
+
+```python
+import base64, signet
+from signet import kem
+
+pair = kem.keygen()  # POSTs to /v1/kem/keygen
+enc = kem.encapsulate(pair["pq_public_b64"], pair["classical_public_b64"])
+shared_a = base64.b64decode(enc["shared_secret_b64"])
+
+dec = kem.decapsulate(
+    pair["kem_id"], enc["pq_ciphertext_b64"],
+    enc["classical_ephemeral_public_b64"],
+)
+shared_b = base64.b64decode(dec["shared_secret_b64"])
+assert shared_a == shared_b   # 32-byte SHA3-256 combined secret
+```
+
+The combined secret is `SHA3-256("signet-hybrid-kem|" || x25519_ss || "|"
+|| mlkem_ss)`.
+
+---
+
+## HSM signer abstraction
+
+The Python SDK exposes a `Signer` protocol so production deployments can
+route signing to a real HSM without touching call sites:
+
+```python
+from signet import Identity, SoftwareSigner, PKCS11Signer
+
+identity = Identity.generate("prn_acme")
+
+# Software (default): liboqs in-process
+sw = SoftwareSigner(
+    algorithm=identity.algorithm, public_key=identity.public_key,
+    secret_key=identity._secret_key, oqs_name=identity._oqs_name,
+)
+hsm_id = identity.with_signer(sw)
+
+# Hardware: bind to python-pkcs11 / vendor SDK in deployment
+pkcs = PKCS11Signer(slot=0, label="ml-dsa-44-key-1")
+```
+
+`PKCS11Signer` ships as a stub that raises `NotImplementedError` until you
+wire it to your vendor library; the interface is identical to
+`SoftwareSigner` so the rest of the SDK doesn't change.
 
 ---
 
@@ -560,12 +797,20 @@ source .venv/bin/activate
 pytest tests/ -v
 ```
 
-| Test                  | What it covers                                            |
-| --------------------- | --------------------------------------------------------- |
-| `test_roundtrip.py`   | Generate identity → sign → submit → verify on the server  |
-| `test_anomaly.py`     | Quantum kernel + RBF separate legit/rogue on synthetic    |
-| `test_wrap.py`        | `@wrap` decorator and `delegate()` semantics              |
-| `test_ws_stream.py`   | WebSocket broadcast delivers envelope and revocation      |
+| Test                    | What it covers                                          |
+| ----------------------- | ------------------------------------------------------- |
+| `test_roundtrip.py`     | Generate identity → sign → submit → verify on the server |
+| `test_anomaly.py`       | Quantum kernel + RBF separate legit/rogue on synthetic   |
+| `test_wrap.py`          | `@wrap` decorator and `delegate()` semantics             |
+| `test_ws_stream.py`     | WebSocket broadcast delivers envelope and revocation     |
+| `test_policy.py`        | Policy engine: first-match-wins, glob, param matchers   |
+| `test_merkle.py`        | Merkle inclusion proofs verify (balanced + odd + tamper) |
+| `test_kem.py`           | Hybrid X25519 + ML-KEM-768 round-trip                    |
+| `test_tenancy.py`       | Per-tenant DB filtering + API-key lookup                 |
+| `test_webhook_hmac.py`  | Outbound HMAC-SHA256 + tenant scoping of dispatch        |
+| `test_cli.py`           | All documented `signet` subcommands parse correctly      |
+
+TypeScript SDK tests run separately: `cd sdk-ts && pnpm test`.
 
 ---
 
@@ -576,6 +821,7 @@ pytest tests/ -v
 - [`docs/QA.md`](docs/QA.md) — 12 prepared judge questions with answers
 - [`docs/RFC-DRAFT.md`](docs/RFC-DRAFT.md) — IETF Internet-Draft outline
 - [`firmware/README.md`](firmware/README.md) — ESP32-C3 firmware notes
+- [`sdk-ts/README.md`](sdk-ts/README.md) — TypeScript SDK usage
 - [`CLAUDE.md`](CLAUDE.md) — codebase guide for AI assistants
 
 ---

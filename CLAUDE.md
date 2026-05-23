@@ -1,90 +1,129 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 ## What this repo is
 
-Signet — a post-quantum cryptographic identity layer for AI agents. Pitch is *Auth0 for AI agents, born quantum-safe*. The full PRD is the source of truth for product scope; treat it as the spec. When the PRD and conversation conflict, ask before deviating.
+Signet — a post-quantum cryptographic identity layer for AI agents. Pitch: *Auth0 for AI agents, born quantum-safe*. The PRD (`docs/PRD.md`) is the binding spec; when the PRD and conversation conflict, ask before deviating.
 
-The hackathon submission is **Phase 0 only**. Sections 9.2–9.6 of the PRD (Phases 1–5) are roadmap, not build targets. Do not scaffold Phase 1+ features unless explicitly asked.
+The hackathon shipped both Phase 0 and a slice of Phase 1+ work that the founder explicitly approved. The PRD's "non-goals for Phase 0" (multi-tenancy, HSM, TypeScript SDK, MCP/A2A integration, policy engine) are now built — they are no longer off-limits.
 
-## Phase 0 scope (the only thing that ships in the hackathon window)
+## What's shipped (current ground truth)
 
-Five deliverables, locked. Don't add a sixth without approval.
+Verify against the code before recommending — file paths can rename.
 
-1. **Python SDK** — `signet.wrap(agent)`, `signet.sign`, `signet.verify`, `signet.revoke`. ML-DSA-44 via `liboqs-python`.
-2. **FastAPI verifier service** — three endpoints: `/v1/envelopes/verify`, `/v1/envelopes/submit`, `/v1/agents/{id}/revoke`. SQLite envelope log, in-memory revocation registry.
-3. **Quantum anomaly detector** — PennyLane, 6-qubit ZZ feature map, SVM. PCA-reduce 32-dim feature vector to 6-dim before encoding. Fallback to classical RBF SVM if quantum kernel doesn't separate cleanly on the synthetic demo data.
-4. **Next.js dashboard** — live action stream (WebSocket), agent registry, anomaly heatmap, revoke button. Dark mode, monospace IDs.
-5. **ESP32-C3 firmware** — I²S audio trigger → envelope assemble → sign → POST to verifier. On-device ML-DSA-44 via pqm4 RISC-V port if it builds; gateway-side signing as Plan B.
+**Identity plane.** ML-DSA-44 sign/verify via `liboqs-python`. Hybrid Ed25519 + ML-DSA-44 default-on; verifier requires both when an Ed25519 pubkey is registered. Canonical JSON (sort_keys, separators=(",",":")) over every field except `signature`. Replay cache (LRU 4096) keyed by `agent_id:nonce`.
 
-Explicit non-goals for Phase 0 (per PRD §9.1): multi-tenancy, HSM, TypeScript SDK, MCP/A2A integration, policy engine beyond hardcoded rules.
+**Verifier service (`verifier/signet_verifier/`).** FastAPI. SQLite with idempotent migrations. Endpoints:
+
+- Identity: `/v1/identities`, `/v1/agents`, `/v1/agents/{id}`, `/v1/agents/{id}/revoke`
+- Envelopes: `/v1/envelopes/verify`, `/v1/envelopes/submit`, `/v1/envelopes/{id}`, `/v1/envelopes/{id}/proof`
+- Audit: `/v1/audit`, `/v1/audit/root`
+- Anomaly: `/v1/anomaly/score`, `/v1/anomaly/report`
+- Webhooks: `/v1/webhooks` (POST/GET), `/v1/webhooks/{id}` (DELETE) — HMAC-SHA256 in `X-Signet-Signature`
+- Policy engine: `/v1/policies` (POST/GET), `/v1/policies/{id}` (DELETE), `/v1/policies/evaluate`
+- KEM: `/v1/kem/keygen`, `/v1/kem/encapsulate`, `/v1/kem/decapsulate` — hybrid X25519 + ML-KEM-768
+- Ops: `/health`, `/metrics` (Prometheus), `/ws/stream` (WebSocket)
+
+Tenancy: every agent/envelope/webhook/policy/kem-key row carries `tenant_id`. When `SIGNET_API_KEYS` is set (JSON map `{"key":"tenant"}` or comma-separated), the middleware resolves the caller's tenant from `X-API-Key` and filters list/audit/revoke/verify endpoints to that tenant. No API-key configuration → single `default` tenant, backward-compatible.
+
+**Python SDK (`sdk-python/signet/`).**
+- `Identity.generate/sign/sign_classical/with_signer`, `verify_signature`, `verify_classical`
+- `Envelope` with default-hybrid `.sign(identity, hybrid=True)`
+- HTTP client: `register`, `submit`, `verify`, `revoke`, `audit`, `get_agent`, `get_envelope`
+- `@wrap` decorator, `delegate()` for capability chains
+- `SignetMCPMiddleware` for MCP/A2A tool dispatch
+- `signet.kem` helpers (keygen/encapsulate/decapsulate)
+- `Signer` protocol + `SoftwareSigner`, `SoftwareClassicalSigner`, `PKCS11Signer` stub for HSMs
+- CLI (`signet` entry point): `keygen / register / sign / verify / submit / revoke / audit / agent / envelope / anomaly score / proof / policy {add,list}`
+
+**TypeScript SDK (`sdk-ts/`).** Cross-language. `generateIdentity`, `newEnvelope`, `signEnvelope`, `verifyEnvelope`, `register`, `submit`, `verify`, `revoke`, `audit`, `inclusionProof`, `canonicalize`. ML-DSA-44 via `@noble/post-quantum`, Ed25519 via `@noble/curves`. Vitest tests + a `test/interop.mjs` script that proves TS-signed envelopes verify against the Python verifier.
+
+**Quantum anomaly detector (`verifier/signet_verifier/anomaly.py`).** PennyLane 6-qubit ZZ feature map kernel + PCA(6) + sklearn SVM. RBF baseline trained side-by-side; served model decided on held-out AUC. `AnomalyDetector.explain()` returns the top-3 most anomalous features by z-score; surfaced in `/v1/anomaly/score` as `top_features`.
+
+**Merkle audit log (`verifier/signet_verifier/merkle.py`).** SHA3-256 leaves (`H(0x00 || canonical_json)`), SHA3-256 node hashes (`H(0x01 || left || right)`), duplicate-last on odd levels. Inclusion proofs verifiable client-side (`verify_proof`) — see also Python tests `tests/test_merkle.py`.
+
+**Dashboard (`dashboard/`).** Next.js 16, Tailwind v4, dark mode default. Live envelope stream via WebSocket, agent registry with revoke button, anomaly heatmap, AUC report card, Merkle inclusion-proof modal triggered by clicking a stream row.
+
+**ESP32-C3 firmware (`firmware/`).** I²S audio trigger → gateway-side ML-DSA-44 signing (Plan B per PRD §15). On-device pqm4 port remains Phase 1+.
+
+**Tests (`tests/`).** SDK round-trip, anomaly fit, `@wrap`/`delegate`, WebSocket broadcast, policy engine (5), Merkle proofs (4), KEM hybrid round-trip (2), CLI surface (4), tenancy isolation (4), webhook HMAC + tenant filter (3). All green.
+
+**Observability.** Prometheus counters/histograms at `/metrics`. Structured JSON logging via `SIGNET_LOG_LEVEL`. Optional CORS allowlist via `SIGNET_CORS_ORIGINS`.
 
 ## Architecture (three planes)
 
-The PRD describes one spine with three planes — keep this mental model when adding code:
+The PRD describes one spine with three planes:
 
-- **Identity plane** — SDK + verifier + revocation registry. Cryptographic state.
-- **Behavior plane** — anomaly engine + (hardcoded for Phase 0) policy checks. Semantic state.
-- **Observability plane** — dashboard + audit log + (Phase 1+) webhooks. What humans see.
+- **Identity plane** — SDK + verifier + revocation registry + KEM. Cryptographic state.
+- **Behavior plane** — anomaly engine + policy engine. Semantic state.
+- **Observability plane** — dashboard + audit log + webhooks. What humans see.
 
-The atomic data unit across all three is the **action envelope** (PRD §8.3). Treat its schema as load-bearing — canonicalize with JCS (RFC 8785) over all fields except `signature`. Hybrid signature = `Ed25519_sig || ML-DSA-44_sig` concatenated; verifier requires both valid.
+The atomic unit is the **action envelope** (PRD §8.3, RFC-DRAFT §4). JCS canonicalization over every field except `signature`. Hybrid signature when both keys are registered.
 
-Planned monorepo layout (per build plan §15): `/sdk-python`, `/verifier`, `/dashboard`, `/firmware`, `/docs`.
+Monorepo layout: `/sdk-python`, `/sdk-ts`, `/verifier`, `/dashboard`, `/firmware`, `/scripts`, `/tests`, `/docs`.
 
 ## Cryptographic decisions (do not change without justification)
 
-- Signing: **ML-DSA-44** (FIPS 204). 2420-byte signatures. Hybrid with Ed25519 during 2027–2033 migration window.
-- KEM: **ML-KEM-768** (FIPS 203), hybrid with X25519 per RFC 9258 draft.
-- Long-lived root keys: **SLH-DSA-128s** (FIPS 205) — hash-based, no lattice assumption.
-- AEAD: ChaCha20-Poly1305. KDF: HKDF-SHA3-256. Hash: SHA3-256 (Merkle).
-- Library: `liboqs` 0.13+ (`liboqs-python` server side, `pqm4` embedded).
+- Signing: **ML-DSA-44** (FIPS 204). 2420-byte signatures. Hybrid with Ed25519.
+- KEM: **ML-KEM-768** (FIPS 203), hybrid with X25519. Combined via SHA3-256.
+- Long-lived root keys: **SLH-DSA-128s** (FIPS 205). Not in core flow yet.
+- AEAD: ChaCha20-Poly1305 (planned, not in critical path). KDF: HKDF-SHA3-256. Hash: SHA3-256 (Merkle).
+- Library: `liboqs` 0.15.x via `liboqs-python` (server). `@noble/post-quantum` (TS).
 
-If you find yourself reaching for RSA, ECDSA, or plain SHA-256 in this codebase, stop and reconsider — the entire point of Signet is that those primitives are the problem.
+If you reach for RSA, ECDSA, or plain SHA-256, stop. The entire point of Signet is that those primitives are the problem.
 
-## Honest quantum claims (this is the line)
+## Honest quantum claims (the line)
 
-PRD §13 and the Q&A defense notebook (§17) are non-negotiable. Do not let docs, READMEs, or marketing copy drift toward:
+PRD §13 and `docs/QA.md` are non-negotiable. Do not drift toward:
 
-- Claiming asymptotic quantum advantage in anomaly detection. The claim is **cold-start advantage** (small per-tenant samples, 2–5% AUC over RBF per Havlíček 2019 / Liu-Arunachalam-Temme 2021 / Huang 2022). Switches to classical online learners at >100K samples per agent.
-- Claiming the quantum kernel needs a real QPU today. It's classically simulated on 6 qubits (where simulation is tractable). PennyLane's hardware-agnostic interface bridges to QPUs later.
+- Claiming asymptotic quantum advantage in anomaly detection. The claim is **cold-start advantage** (2–5% AUC over RBF on small per-tenant samples, per Havlíček 2019 / Liu-Arunachalam-Temme 2021 / Huang 2022). Switches to classical online learners at >100K samples per agent.
+- Claiming the quantum kernel needs a real QPU today. It's classically simulated on 6 qubits.
 - Hand-waving the 38× signature-size overhead vs ECDSA. Acknowledge it; defend it on horizon and verify-throughput grounds.
 
-The benchmark comparing classical RBF, Isolation Forest, quantum kernel SVM, and quantum-kernel-with-classical-embeddings must be reproducible and checked into the repo.
+Reproducible benchmark in `docs/benchmark/`.
 
-## Demo script and the rogue-agent kill (PRD §14)
+## Demo script (PRD §14)
 
-The 5-minute demo is the artifact. When building, optimize for the demo path:
+The 5-minute demo is the artifact. Optimize for this path:
 
 1. Three legit agents firing actions, all green.
-2. ESP32-C3 picks up a voice trigger, signs on-device, envelope appears on dashboard.
-3. Rogue agent toggled on — anomaly heatmap goes green→yellow→red within **3 envelopes / ~6 seconds**. Tune the threshold to hit this.
-4. Click revoke. Revocation propagates. Rogue's next envelope is rejected with `verdict: revoked`.
-5. Show Merkle inclusion proof for one envelope.
+2. ESP32-C3 voice trigger → gateway signs → envelope on dashboard.
+3. Rogue agent toggled on — heatmap goes green→yellow→red in 3 envelopes / ~6 s.
+4. Click revoke. Rogue's next envelope rejected with `verdict: revoked`.
+5. Click any green envelope on the dashboard → Merkle inclusion proof modal.
 
-If a change you're making breaks any step of this script, that's a release blocker — fix or revert before moving on.
+If a change breaks any step, that's a release blocker — fix or revert before moving on.
 
-## Build mantra (from the PRD)
+## Commands (actual, not planned)
 
-> *Identity → Behavior → Observability. One spine. Don't side-quest.*
+```bash
+# Python SDK
+pip install -e ./sdk-python
+signet keygen --principal prn_acme --out agent.key
 
-Three features locked. No fourth. Demo > production. No Phase 1+ creep.
+# Verifier (uses ./verifier/signet.db unless SIGNET_DB_PATH set)
+pip install -e ./verifier
+uvicorn signet_verifier.main:app --reload
 
-## Commands
+# TypeScript SDK
+cd sdk-ts && pnpm install && pnpm build && pnpm test
 
-No code is checked in yet — commands below are the planned shape per PRD §10.3 and §15. Update this section as the SDK/verifier/dashboard land.
+# Dashboard
+cd dashboard && pnpm dev
 
-- Python SDK install (planned): `pip install -e ./sdk-python`
-- Verifier dev (planned): `uvicorn verifier.main:app --reload`
-- Dashboard dev (planned): `cd dashboard && pnpm dev`
-- ESP32 firmware build (planned): `cd firmware && idf.py build flash monitor`
-- CLI (planned surface): `signet keygen`, `signet sign`, `signet verify`, `signet revoke`, `signet audit`, `signet anomaly score`
+# Tests
+pytest tests/ -v
 
-## Pre-flight checks before the hackathon (PRD §15 "pre-hackathon")
+# ESP32-C3 (firmware)
+cd firmware && idf.py build flash monitor
+```
+
+## Pre-flight checks (PRD §15)
 
 Verify before Hour 0, in this order:
 
 1. `liboqs-python` installs and ML-DSA-44 sign/verify works end-to-end.
 2. ESP32-C3 flashes with ESP-IDF; TRWS2014B mic captures 16 kHz I²S audio cleanly.
-3. `mupq/pqm4` Dilithium RISC-V port builds for `target=esp32c3`. If it doesn't, switch to gateway-side signing for the demo — do not burn hours debugging the port.
+3. `mupq/pqm4` Dilithium RISC-V port builds for `target=esp32c3`. If not, gateway-side signing is the documented Plan B — don't burn hours.
 4. PennyLane quantum kernel tutorial runs end-to-end on a toy dataset.
