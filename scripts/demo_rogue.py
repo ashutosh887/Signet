@@ -1,21 +1,54 @@
 """End-to-end demo: three legit agents stay green, a rogue agent goes red, revoke kills it.
 
 Requires the verifier running on localhost:8000.
+
+If OPENAI_API_KEY or GEMINI_API_KEY are set (via .env), the legit agents
+plan their actions through a real LLM instead of canned dicts. Set
+SIGNET_LLM_PROVIDER=openai|gemini to pick the provider (default: openai
+if key present, else gemini, else canned).
 """
 from __future__ import annotations
 
+import os
 import random
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sdk-python"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except Exception:
+    pass
 
 from signet import Envelope, Identity, register, revoke, submit
 
-
-import os
 VERIFIER = os.environ.get("SIGNET_VERIFIER_URL", "http://127.0.0.1:8000")
+
+
+def _resolve_llm_provider() -> str | None:
+    pref = os.environ.get("SIGNET_LLM_PROVIDER")
+    if pref in ("openai", "gemini") and os.environ.get(f"{pref.upper()}_API_KEY"):
+        return pref
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    if os.environ.get("GEMINI_API_KEY"):
+        return "gemini"
+    return None
+
+
+LLM_PROVIDER = _resolve_llm_provider()
+LLM_PROMPTS = (
+    "Schedule a 30-minute meeting with Akash on Monday at 4pm",
+    "Send an email to ops@acme.test that the deploy is green",
+    "Summarise the Q2 OKR doc in two sentences",
+    "Search the internal knowledge base for the on-call runbook",
+    "Set a reminder for tomorrow morning to review the standup notes",
+    "Book a coffee chat with Priya for Thursday afternoon",
+)
 
 LEGIT_ACTIONS = (
     "book_meeting",
@@ -36,6 +69,17 @@ ROGUE_ACTIONS = (
 )
 
 
+def _llm_action() -> dict | None:
+    if not LLM_PROVIDER:
+        return None
+    try:
+        from llm_agent import plan_action  # type: ignore
+        return plan_action(random.choice(LLM_PROMPTS), LLM_PROVIDER)
+    except Exception as exc:
+        print(f"  (LLM planner failed, falling back to canned: {exc})")
+        return None
+
+
 def _fire(identity: Identity, *, rogue: bool) -> dict:
     if rogue:
         name = random.choice(ROGUE_ACTIONS)
@@ -43,13 +87,19 @@ def _fire(identity: Identity, *, rogue: bool) -> dict:
             f"k{i}": "x" * random.randint(50, 300)
             for i in range(random.randint(8, 18))
         }
+        action = {"type": "tool_call", "name": name, "params": params}
     else:
-        name = random.choice(LEGIT_ACTIONS)
-        params = {f"p{i}": f"v{i}" for i in range(random.randint(1, 3))}
+        llm = _llm_action()
+        if llm is not None:
+            action = llm
+        else:
+            name = random.choice(LEGIT_ACTIONS)
+            params = {f"p{i}": f"v{i}" for i in range(random.randint(1, 3))}
+            action = {"type": "tool_call", "name": name, "params": params}
     env = Envelope(
         agent_id=identity.agent_id,
         principal_id=identity.principal_id,
-        action={"type": "tool_call", "name": name, "params": params},
+        action=action,
     )
     env.sign(identity)
     return submit(env, verifier_url=VERIFIER)
@@ -63,7 +113,11 @@ def _provision(label: str) -> Identity:
 
 
 def main() -> None:
-    print("=== Signet rogue-agent demo ===\n")
+    print("=== Signet rogue-agent demo ===")
+    if LLM_PROVIDER:
+        print(f"Legit agents will plan via real {LLM_PROVIDER.upper()} model.\n")
+    else:
+        print("(No LLM key found — legit agents use canned actions.)\n")
 
     print("Provisioning 3 legit agents + 1 rogue agent:")
     legit = [_provision(f"legit-{i+1}") for i in range(3)]
