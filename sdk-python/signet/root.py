@@ -1,5 +1,3 @@
-"""SLH-DSA-128s (FIPS 205) long-lived root keys. Hash-based — survives an
-unforeseen lattice break that would compromise ML-DSA agent keys."""
 from __future__ import annotations
 
 import json

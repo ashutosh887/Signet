@@ -1,5 +1,3 @@
-"""Seed a running verifier with a tenant, policy, and varied envelope history
-so the dashboard isn't empty on cold start and the heatmap actually paints."""
 from __future__ import annotations
 
 import argparse

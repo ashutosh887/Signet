@@ -1,16 +1,3 @@
-/*
- * Signet ESP32-C3 edge agent — Phase 0 reference firmware.
- *
- * Plan B path per PRD §15:
- *   I2S audio capture (TRWS2014B mic, 16 kHz mono)
- *      -> energy-threshold trigger
- *      -> SHA-256 fingerprint of the trigger window
- *      -> HTTPS POST to the edge gateway, which signs ML-DSA-44 and submits
- *
- * Build with ESP-IDF 5.3+:
- *   idf.py set-target esp32c3 && idf.py menuconfig && idf.py build flash monitor
- */
-
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
@@ -34,7 +21,7 @@
 
 #define WIFI_SSID         CONFIG_SIGNET_WIFI_SSID
 #define WIFI_PASS         CONFIG_SIGNET_WIFI_PASS
-#define GATEWAY_URL       CONFIG_SIGNET_GATEWAY_URL  /* e.g. http://10.0.0.10:8001/edge/trigger */
+#define GATEWAY_URL       CONFIG_SIGNET_GATEWAY_URL
 #define DEVICE_AGENT_ID   CONFIG_SIGNET_DEVICE_AGENT_ID
 #define SAMPLE_RATE_HZ    16000
 #define I2S_BCK           4

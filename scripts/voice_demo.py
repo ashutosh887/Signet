@@ -1,5 +1,3 @@
-"""Voice → ElevenLabs Scribe → LLM agent → signed Signet envelope.
-Stands in for the ESP32-C3 trigger when no hardware is on stage."""
 from __future__ import annotations
 
 import argparse

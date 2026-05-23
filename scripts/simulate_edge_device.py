@@ -1,4 +1,3 @@
-"""Drive the edge gateway as if it were the ESP32-C3 firing voice triggers."""
 from __future__ import annotations
 
 import argparse

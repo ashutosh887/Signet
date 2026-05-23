@@ -1,5 +1,3 @@
-"""LLM agent: ask OpenAI or Gemini to plan a tool call, sign as a Signet
-envelope, submit. Keys loaded from .env."""
 from __future__ import annotations
 
 import argparse

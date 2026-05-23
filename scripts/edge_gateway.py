@@ -1,9 +1,3 @@
-"""Edge gateway that signs ML-DSA-44 envelopes on behalf of a registered device.
-
-The device (ESP32-C3 or simulator) POSTs a JSON trigger; the gateway holds the
-device's secret key, builds and signs the envelope, then submits it to the
-verifier.
-"""
 from __future__ import annotations
 
 import argparse

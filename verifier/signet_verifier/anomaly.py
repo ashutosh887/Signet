@@ -1,16 +1,3 @@
-"""Quantum-kernel-SVM anomaly detector for agent behaviour drift.
-
-Pipeline:
-    sliding window of recent envelopes per agent
-        -> 32-dim feature extraction
-        -> StandardScaler + PCA(6)
-        -> 6-qubit ZZ feature map quantum kernel (Havliček 2019)
-        -> SVC(kernel='precomputed')
-
-A classical RBF SVM is trained on the same split and the detector serves
-whichever wins the held-out validation AUC. A cold-start guardrail boosts
-the score when the action name is outside the known vocabulary.
-"""
 from __future__ import annotations
 
 import math
@@ -77,7 +64,7 @@ LEGIT_ACTIONS = (
 def _action_index(name: str) -> int:
     if name in LEGIT_ACTIONS:
         return LEGIT_ACTIONS.index(name)
-    return len(LEGIT_ACTIONS)  # catch-all slot at index 15
+    return len(LEGIT_ACTIONS)
 
 
 def _iso(ts: str) -> datetime:

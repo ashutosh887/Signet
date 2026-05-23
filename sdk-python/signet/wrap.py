@@ -16,13 +16,6 @@ def wrap(
     verifier_url: str = DEFAULT_VERIFIER,
     auto_submit: bool = True,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """Decorate an agent function so every return value is signed and submitted.
-
-    The wrapped function may return:
-      - a full ``{"type": ..., "name": ..., "params": ...}`` action dict;
-      - a dict with at least a ``name`` field (``type`` defaults to ``tool_call``); or
-      - anything else, in which case the result is wrapped under the function's name.
-    """
     caps = list(capabilities) if capabilities else []
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:

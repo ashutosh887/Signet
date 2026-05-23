@@ -1,5 +1,3 @@
-"""3 legit agents stay green, rogue goes red, revoke kills it.
-If OPENAI_API_KEY/GEMINI_API_KEY are present, legit agents plan via LLM."""
 from __future__ import annotations
 
 import os

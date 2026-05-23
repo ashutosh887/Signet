@@ -1,12 +1,10 @@
-"""Sparse Merkle Tree of revoked agent IDs. 256-deep; inclusion vs
-non-membership distinguished by leaf hash (PRESENT marker vs EMPTY_LEAF)."""
 from __future__ import annotations
 
 import hashlib
 from functools import lru_cache
 
 DEPTH = 256
-PRESENT = b"\x01"           # marker stored at every revoked-key leaf
+PRESENT = b"\x01"
 EMPTY_LEAF = hashlib.sha3_256(b"signet-smt-empty-leaf").digest()
 
 
