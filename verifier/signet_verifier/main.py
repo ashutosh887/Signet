@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 
 import oqs
 
-from . import db, merkle, webhooks as webhooks_mod
+from . import db, kem as kem_mod, merkle, policy, webhooks as webhooks_mod
 from .anomaly import AnomalyDetector, build_training_set
 from .stream import StreamHub
 
@@ -73,6 +73,29 @@ ANOMALY_GAUGE = Histogram(
 )
 
 
+def _bootstrap_api_keys(conn) -> None:
+    raw = os.environ.get("SIGNET_API_KEYS", "").strip()
+    if not raw:
+        return
+    if raw.startswith("{"):
+        try:
+            mapping = json.loads(raw)
+        except json.JSONDecodeError:
+            mapping = {}
+        for key, tenant in mapping.items():
+            db.add_api_key(
+                conn, key_hash=_hash_api_key(key), label=tenant, tenant_id=tenant
+            )
+    else:
+        for key in (k.strip() for k in raw.split(",") if k.strip()):
+            db.add_api_key(
+                conn,
+                key_hash=_hash_api_key(key),
+                label=db.DEFAULT_TENANT,
+                tenant_id=db.DEFAULT_TENANT,
+            )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     conn = db.connect()
@@ -80,6 +103,7 @@ async def lifespan(app: FastAPI):
     app.state.db = conn
     app.state.hub = StreamHub()
     app.state.nonce_cache = OrderedDict()
+    _bootstrap_api_keys(conn)
 
     detector = AnomalyDetector()
     if os.environ.get("SIGNET_SKIP_TRAIN") != "1":
@@ -102,7 +126,7 @@ async def lifespan(app: FastAPI):
 
 _cors_origins = [o.strip() for o in os.environ.get("SIGNET_CORS_ORIGINS", "*").split(",") if o.strip()]
 
-app = FastAPI(title="Signet Verifier", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Signet Verifier", version="0.3.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -123,20 +147,27 @@ async def telemetry_and_auth(request: Request, call_next):
     route = request.url.path
     started = time.perf_counter()
     api_keys_required = bool(os.environ.get("SIGNET_API_KEYS"))
+    request.state.tenant_id = db.DEFAULT_TENANT
     if api_keys_required and not any(route.startswith(p) for p in _PUBLIC_PREFIXES):
         key = request.headers.get("x-api-key") or ""
-        if not key or not db.api_key_exists(app.state.db, _hash_api_key(key)):
+        tenant = db.api_key_tenant(app.state.db, _hash_api_key(key)) if key else None
+        if not tenant:
             REQUESTS.labels(route=route, status="401").inc()
             return Response(
                 content='{"detail":"unauthorized"}',
                 status_code=401,
                 media_type="application/json",
             )
+        request.state.tenant_id = tenant
     response = await call_next(request)
     elapsed = time.perf_counter() - started
     LATENCY.labels(route=route).observe(elapsed)
     REQUESTS.labels(route=route, status=str(response.status_code)).inc()
     return response
+
+
+def _tenant_of(request: Request) -> str:
+    return getattr(request.state, "tenant_id", db.DEFAULT_TENANT)
 
 
 @app.get("/metrics")
@@ -151,6 +182,7 @@ class IdentityRegistration(BaseModel):
     public_key_b64: str
     hybrid_classical: str | None = None
     hybrid_public_key_b64: str | None = None
+    tenant_id: str | None = None
 
 
 class Envelope(BaseModel):
@@ -170,6 +202,7 @@ class Verdict(BaseModel):
     reason: str | None = None
     anomaly_score: float | None = None
     envelope_id: str | None = None
+    policy_rule_id: str | None = None
 
 
 def _resolve_algorithm(preferred: str) -> str:
@@ -215,11 +248,26 @@ def _remember_nonce(env: Envelope) -> bool:
     return True
 
 
-def _verify(env: Envelope) -> Verdict:
+def _policy_context(env: Envelope, agent: dict[str, Any]) -> dict[str, Any]:
+    action = env.action or {}
+    return {
+        "tenant_id": agent.get("tenant_id", db.DEFAULT_TENANT),
+        "agent_id": env.agent_id,
+        "principal_id": env.principal_id,
+        "action_type": action.get("type"),
+        "action_name": action.get("name"),
+        "params": action.get("params") or {},
+        "capability": action.get("capability"),
+    }
+
+
+def _verify(env: Envelope, *, tenant_id: str | None = None) -> Verdict:
     conn = app.state.db
     agent = db.get_agent(conn, env.agent_id)
     if agent is None:
         return Verdict(valid=False, reason="unknown_agent", envelope_id=env.envelope_id)
+    if tenant_id is not None and agent.get("tenant_id", db.DEFAULT_TENANT) != tenant_id:
+        return Verdict(valid=False, reason="tenant_mismatch", envelope_id=env.envelope_id)
     if agent.get("revoked_at"):
         return Verdict(valid=False, reason="revoked", envelope_id=env.envelope_id)
 
@@ -264,6 +312,20 @@ def _verify(env: Envelope) -> Verdict:
     if not _remember_nonce(env):
         return Verdict(valid=False, reason="replay", envelope_id=env.envelope_id)
 
+    decision = policy.evaluate_policies(
+        db.list_policies(
+            conn, tenant_id=agent.get("tenant_id", db.DEFAULT_TENANT), enabled_only=True
+        ),
+        _policy_context(env, agent),
+    )
+    if not decision.allowed:
+        return Verdict(
+            valid=False,
+            reason=decision.reason or "policy_violation",
+            envelope_id=env.envelope_id,
+            policy_rule_id=decision.rule_id,
+        )
+
     return Verdict(valid=True, anomaly_score=0.0, envelope_id=env.envelope_id)
 
 
@@ -288,7 +350,7 @@ def health() -> dict[str, str]:
 
 
 @app.post("/v1/identities")
-def register_identity(reg: IdentityRegistration) -> dict[str, str]:
+def register_identity(reg: IdentityRegistration, request: Request) -> dict[str, str]:
     try:
         pk = base64.b64decode(reg.public_key_b64)
     except Exception as exc:
@@ -299,30 +361,38 @@ def register_identity(reg: IdentityRegistration) -> dict[str, str]:
             hybrid_pk = base64.b64decode(reg.hybrid_public_key_b64)
         except Exception as exc:
             raise HTTPException(400, f"bad hybrid_public_key_b64: {exc}")
+    tenant_id = reg.tenant_id or _tenant_of(request)
     db.upsert_agent(
         app.state.db,
         agent_id=reg.agent_id,
         principal_id=reg.principal_id,
         algorithm=reg.algorithm,
         public_key=pk,
+        tenant_id=tenant_id,
         hybrid_classical=reg.hybrid_classical,
         hybrid_public_key=hybrid_pk,
     )
     return {
         "agent_id": reg.agent_id,
+        "tenant_id": tenant_id,
         "status": "registered",
         "hybrid": "yes" if hybrid_pk else "no",
     }
 
 
 @app.post("/v1/envelopes/verify", response_model=Verdict)
-def verify_envelope(envelope: Envelope) -> Verdict:
-    return _verify(envelope)
+def verify_envelope(envelope: Envelope, request: Request) -> Verdict:
+    api_keys_required = bool(os.environ.get("SIGNET_API_KEYS"))
+    return _verify(envelope, tenant_id=_tenant_of(request) if api_keys_required else None)
 
 
 @app.post("/v1/envelopes/submit", response_model=Verdict)
-async def submit_envelope(envelope: Envelope) -> Verdict:
-    verdict = _verify(envelope)
+async def submit_envelope(envelope: Envelope, request: Request) -> Verdict:
+    api_keys_required = bool(os.environ.get("SIGNET_API_KEYS"))
+    tenant_scope = _tenant_of(request) if api_keys_required else None
+    verdict = _verify(envelope, tenant_id=tenant_scope)
+    agent = db.get_agent(app.state.db, envelope.agent_id) or {}
+    tenant_id = agent.get("tenant_id", db.DEFAULT_TENANT)
     if verdict.valid:
         score = _score_for_agent(envelope.agent_id, envelope)
         if score is not None:
@@ -340,6 +410,7 @@ async def submit_envelope(envelope: Envelope) -> Verdict:
         reason=verdict.reason,
         anomaly_score=verdict.anomaly_score,
         raw=envelope.model_dump(),
+        tenant_id=tenant_id,
         leaf_hash=leaf,
     )
     ENVELOPES.labels(verdict="valid" if verdict.valid else "invalid").inc()
@@ -349,6 +420,7 @@ async def submit_envelope(envelope: Envelope) -> Verdict:
             "envelope_id": envelope.envelope_id,
             "agent_id": envelope.agent_id,
             "principal_id": envelope.principal_id,
+            "tenant_id": tenant_id,
             "action": envelope.action,
             "verdict": verdict.model_dump(),
             "received_at": received_at,
@@ -365,6 +437,7 @@ async def submit_envelope(envelope: Envelope) -> Verdict:
             "verdict": verdict.model_dump(),
             "leaf_index": leaf_index,
         },
+        tenant_id=tenant_id,
     )
     if verdict.anomaly_score is not None and verdict.anomaly_score >= 0.7:
         await webhooks_mod.emit(
@@ -375,6 +448,7 @@ async def submit_envelope(envelope: Envelope) -> Verdict:
                 "agent_id": envelope.agent_id,
                 "anomaly_score": verdict.anomaly_score,
             },
+            tenant_id=tenant_id,
         )
     return verdict
 
@@ -421,7 +495,15 @@ def anomaly_report() -> dict[str, Any]:
 
 
 @app.post("/v1/agents/{agent_id}/revoke")
-async def revoke_agent_endpoint(agent_id: str, reason: str = "unspecified") -> dict[str, str]:
+async def revoke_agent_endpoint(
+    agent_id: str, request: Request, reason: str = "unspecified"
+) -> dict[str, str]:
+    agent = db.get_agent(app.state.db, agent_id)
+    if agent is None:
+        raise HTTPException(404, "unknown_agent")
+    api_keys_required = bool(os.environ.get("SIGNET_API_KEYS"))
+    if api_keys_required and agent.get("tenant_id", db.DEFAULT_TENANT) != _tenant_of(request):
+        raise HTTPException(403, "tenant_mismatch")
     ok = db.revoke_agent(app.state.db, agent_id, reason)
     if not ok:
         raise HTTPException(404, "unknown_agent")
@@ -432,20 +514,28 @@ async def revoke_agent_endpoint(agent_id: str, reason: str = "unspecified") -> d
         app.state.db,
         "agent.revoked",
         {"agent_id": agent_id, "reason": reason},
+        tenant_id=agent.get("tenant_id", db.DEFAULT_TENANT),
     )
     return {"agent_id": agent_id, "status": "revoked", "reason": reason}
 
 
+def _tenant_filter(request: Request) -> str | None:
+    return _tenant_of(request) if os.environ.get("SIGNET_API_KEYS") else None
+
+
 @app.get("/v1/agents")
-def list_agents_endpoint() -> dict[str, Any]:
-    rows = db.list_agents(app.state.db)
+def list_agents_endpoint(request: Request) -> dict[str, Any]:
+    rows = db.list_agents(app.state.db, tenant_id=_tenant_filter(request))
     return {"count": len(rows), "agents": rows}
 
 
 @app.get("/v1/agents/{agent_id}")
-def get_agent_endpoint(agent_id: str) -> dict[str, Any]:
+def get_agent_endpoint(agent_id: str, request: Request) -> dict[str, Any]:
     agent = db.get_agent(app.state.db, agent_id)
     if agent is None:
+        raise HTTPException(404, "unknown_agent")
+    tenant_scope = _tenant_filter(request)
+    if tenant_scope is not None and agent.get("tenant_id", db.DEFAULT_TENANT) != tenant_scope:
         raise HTTPException(404, "unknown_agent")
     agent.pop("public_key", None)
     agent.pop("hybrid_public_key", None)
@@ -453,9 +543,12 @@ def get_agent_endpoint(agent_id: str) -> dict[str, Any]:
 
 
 @app.get("/v1/envelopes/{envelope_id}")
-def get_envelope_endpoint(envelope_id: str) -> dict[str, Any]:
+def get_envelope_endpoint(envelope_id: str, request: Request) -> dict[str, Any]:
     env = db.get_envelope(app.state.db, envelope_id)
     if env is None:
+        raise HTTPException(404, "unknown_envelope")
+    tenant_scope = _tenant_filter(request)
+    if tenant_scope is not None and env.get("tenant_id", db.DEFAULT_TENANT) != tenant_scope:
         raise HTTPException(404, "unknown_envelope")
     return env
 
@@ -495,7 +588,7 @@ class WebhookCreate(BaseModel):
 
 
 @app.post("/v1/webhooks")
-def create_webhook(payload: WebhookCreate) -> dict[str, Any]:
+def create_webhook(payload: WebhookCreate, request: Request) -> dict[str, Any]:
     webhook_id = f"wh_{secrets.token_hex(8)}"
     db.add_webhook(
         app.state.db,
@@ -503,13 +596,14 @@ def create_webhook(payload: WebhookCreate) -> dict[str, Any]:
         url=payload.url,
         events=payload.events,
         secret=payload.secret,
+        tenant_id=_tenant_of(request),
     )
     return {"webhook_id": webhook_id, "url": payload.url, "events": payload.events}
 
 
 @app.get("/v1/webhooks")
-def list_webhook_endpoints() -> dict[str, Any]:
-    rows = db.list_webhooks(app.state.db)
+def list_webhook_endpoints(request: Request) -> dict[str, Any]:
+    rows = db.list_webhooks(app.state.db, tenant_id=_tenant_filter(request))
     return {"count": len(rows), "webhooks": rows}
 
 
@@ -521,9 +615,161 @@ def delete_webhook(webhook_id: str) -> dict[str, str]:
 
 
 @app.get("/v1/audit")
-def audit(limit: int = 100, agent_id: str | None = None) -> dict[str, Any]:
-    rows = db.recent_envelopes(app.state.db, limit=limit, agent_id=agent_id)
+def audit(
+    request: Request, limit: int = 100, agent_id: str | None = None
+) -> dict[str, Any]:
+    rows = db.recent_envelopes(
+        app.state.db,
+        limit=limit,
+        agent_id=agent_id,
+        tenant_id=_tenant_filter(request),
+    )
     return {"count": len(rows), "envelopes": rows}
+
+
+class PolicyRule(BaseModel):
+    id: str | None = None
+    effect: str = "allow"
+    match: dict[str, Any] = Field(default_factory=dict)
+    reason: str | None = None
+    enabled: bool = True
+
+
+class PolicyCreate(BaseModel):
+    name: str
+    rules: list[PolicyRule]
+    enabled: bool = True
+
+
+@app.post("/v1/policies")
+def create_policy(payload: PolicyCreate, request: Request) -> dict[str, Any]:
+    policy_id = f"pol_{secrets.token_hex(8)}"
+    db.upsert_policy(
+        app.state.db,
+        policy_id=policy_id,
+        tenant_id=_tenant_of(request),
+        name=payload.name,
+        rules=[r.model_dump() for r in payload.rules],
+        enabled=payload.enabled,
+    )
+    return {"policy_id": policy_id, "name": payload.name, "enabled": payload.enabled}
+
+
+@app.get("/v1/policies")
+def list_policy_endpoints(request: Request) -> dict[str, Any]:
+    rows = db.list_policies(app.state.db, tenant_id=_tenant_filter(request))
+    return {"count": len(rows), "policies": rows}
+
+
+@app.delete("/v1/policies/{policy_id}")
+def delete_policy_endpoint(policy_id: str) -> dict[str, str]:
+    if not db.delete_policy(app.state.db, policy_id):
+        raise HTTPException(404, "unknown_policy")
+    return {"policy_id": policy_id, "status": "deleted"}
+
+
+class PolicyEvalRequest(BaseModel):
+    agent_id: str
+    principal_id: str | None = None
+    action: dict[str, Any]
+
+
+@app.post("/v1/policies/evaluate")
+def evaluate_policy(payload: PolicyEvalRequest, request: Request) -> dict[str, Any]:
+    agent = db.get_agent(app.state.db, payload.agent_id) or {"tenant_id": _tenant_of(request)}
+    context = {
+        "tenant_id": agent.get("tenant_id", db.DEFAULT_TENANT),
+        "agent_id": payload.agent_id,
+        "principal_id": payload.principal_id or agent.get("principal_id"),
+        "action_type": payload.action.get("type"),
+        "action_name": payload.action.get("name"),
+        "params": payload.action.get("params") or {},
+        "capability": payload.action.get("capability"),
+    }
+    decision = policy.evaluate_policies(
+        db.list_policies(
+            app.state.db,
+            tenant_id=agent.get("tenant_id", db.DEFAULT_TENANT),
+            enabled_only=True,
+        ),
+        context,
+    )
+    return {
+        "allowed": decision.allowed,
+        "rule_id": decision.rule_id,
+        "reason": decision.reason,
+    }
+
+
+class KemKeygenRequest(BaseModel):
+    tenant_id: str | None = None
+
+
+@app.post("/v1/kem/keygen")
+def kem_keygen(payload: KemKeygenRequest, request: Request) -> dict[str, Any]:
+    pair = kem_mod.generate()
+    kem_id = f"kem_{secrets.token_hex(8)}"
+    db.store_kem_keypair(
+        app.state.db,
+        kem_id=kem_id,
+        tenant_id=payload.tenant_id or _tenant_of(request),
+        algorithm=pair.algorithm,
+        public_key=pair.classical_public + pair.pq_public,
+        secret_key=pair.classical_secret + pair.pq_secret,
+    )
+    return {
+        "kem_id": kem_id,
+        "algorithm": pair.algorithm,
+        "pq_public_b64": base64.b64encode(pair.pq_public).decode(),
+        "classical_public_b64": base64.b64encode(pair.classical_public).decode(),
+    }
+
+
+class KemEncapsulateRequest(BaseModel):
+    pq_public_b64: str
+    classical_public_b64: str
+
+
+@app.post("/v1/kem/encapsulate")
+def kem_encapsulate(payload: KemEncapsulateRequest) -> dict[str, Any]:
+    try:
+        pq_pk = base64.b64decode(payload.pq_public_b64)
+        cl_pk = base64.b64decode(payload.classical_public_b64)
+    except Exception as exc:
+        raise HTTPException(400, f"bad base64: {exc}")
+    ct, ephem, shared = kem_mod.encapsulate(pq_pk, cl_pk)
+    return {
+        "algorithm": kem_mod.HYBRID_LABEL,
+        "pq_ciphertext_b64": base64.b64encode(ct).decode(),
+        "classical_ephemeral_public_b64": base64.b64encode(ephem).decode(),
+        "shared_secret_b64": base64.b64encode(shared).decode(),
+    }
+
+
+class KemDecapsulateRequest(BaseModel):
+    kem_id: str
+    pq_ciphertext_b64: str
+    classical_ephemeral_public_b64: str
+
+
+@app.post("/v1/kem/decapsulate")
+def kem_decapsulate(payload: KemDecapsulateRequest) -> dict[str, Any]:
+    row = db.get_kem_keypair(app.state.db, payload.kem_id)
+    if row is None:
+        raise HTTPException(404, "unknown_kem")
+    secret = bytes(row["secret_key"])
+    cl_sk = secret[:32]
+    pq_sk = secret[32:]
+    try:
+        ct = base64.b64decode(payload.pq_ciphertext_b64)
+        ephem = base64.b64decode(payload.classical_ephemeral_public_b64)
+    except Exception as exc:
+        raise HTTPException(400, f"bad base64: {exc}")
+    shared = kem_mod.decapsulate(pq_sk, ct, cl_sk, ephem)
+    return {
+        "algorithm": row["algorithm"],
+        "shared_secret_b64": base64.b64encode(shared).decode(),
+    }
 
 
 @app.websocket("/ws/stream")
