@@ -1,10 +1,10 @@
-"""Seed a running verifier with a tenant, policy, and envelope history so
-the dashboard isn't empty on cold start."""
+"""Seed a running verifier with a tenant, policy, and varied envelope history
+so the dashboard isn't empty on cold start and the heatmap actually paints."""
 from __future__ import annotations
 
 import argparse
 import base64
-import json
+import random
 import sys
 import time
 from pathlib import Path
@@ -16,17 +16,32 @@ from signet import Envelope, Identity
 
 
 LEGIT_ACTIONS = (
-    ("book_meeting", {"date": "2026-05-25", "attendees": 3}),
-    ("send_email", {"to": "ops@acme.test", "size_kb": 2}),
-    ("fetch_document", {"doc_id": "doc_4f2a"}),
-    ("summarize", {"length": "short"}),
-    ("search_kb", {"query": "Q2 OKRs"}),
+    ("book_meeting",  {"with": "Akash", "date": "2026-05-25", "duration_min": 30}),
+    ("book_meeting",  {"with": "Priya", "date": "2026-05-26", "duration_min": 60}),
+    ("send_email",    {"to": "ops@acme.test", "subject": "deploy green", "body": "All checks passed."}),
+    ("send_email",    {"to": "team@acme.test", "subject": "standup", "body": "See notes."}),
+    ("fetch_document",{"doc_id": "doc_4f2a"}),
+    ("fetch_document",{"doc_id": "doc_q2_okr"}),
+    ("summarize",     {"source": "Q2 OKR doc", "length": "short"}),
+    ("summarize",     {"source": "weekly standup", "length": "medium"}),
+    ("search_kb",     {"query": "Q2 OKRs"}),
+    ("search_kb",     {"query": "on-call runbook"}),
+    ("set_reminder",  {"when": "2026-05-24T09:00:00Z", "what": "Review standup notes"}),
+)
+
+BORDERLINE_ACTIONS = (
+    ("fetch_document", {"doc_id": "doc_" + "x" * 200}),
+    ("search_kb",      {"query": "select * from " + ", ".join(f"t{i}" for i in range(40))}),
+    ("send_email",     {"to": "external-vendor@third.party",
+                        "subject": "re: confidential", "body": "x" * 3000,
+                        "attachments": [f"a{i}.pdf" for i in range(15)]}),
+    ("summarize",      {"source": "x" * 5000, "length": "long"}),
 )
 
 ROGUE_ACTIONS = (
     ("exfiltrate_dump", {"target_url": "evil.test", "bytes": 50_000_000}),
-    ("wire_transfer", {"amount": 250_000, "to_account": "AT22999"}),
-    ("drop_table", {"name": "customers"}),
+    ("wire_transfer",   {"amount": 250_000, "to_account": "AT22999"}),
+    ("drop_table",      {"name": "customers"}),
 )
 
 
@@ -59,17 +74,18 @@ def _submit(identity: Identity, name: str, params: dict, verifier: str) -> dict:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--verifier", default="http://localhost:8000")
-    p.add_argument("--tenant", default=None,
-                   help="Override tenant; default is whatever the verifier resolves the policy POST to "
-                        "(i.e. 'default' when SIGNET_API_KEYS is unset).")
-    p.add_argument("--warmup", type=int, default=8, help="legit envelopes per agent")
+    p.add_argument("--tenant", default=None)
+    p.add_argument("--warmup", type=int, default=10, help="legit envelopes per agent (canned, fast)")
+    p.add_argument("--show", type=int, default=4, help="visible LEGIT envelopes per agent (varied)")
+    p.add_argument("--borderline", type=int, default=4, help="borderline envelopes (suspicious shape)")
+    p.add_argument("--rogue", type=int, default=3, help="rogue envelopes (policy-denied)")
     args = p.parse_args()
 
     V = args.verifier
     httpx.get(f"{V}/health", timeout=3).raise_for_status()
     print(f"verifier up at {V}")
 
-    print(f"\n[1/4] creating policy (tenant={args.tenant or 'default'})")
+    print(f"\n[1/5] creating policy (tenant={args.tenant or 'default'})")
     pol = httpx.post(
         f"{V}/v1/policies",
         json={
@@ -88,39 +104,54 @@ def main() -> None:
     ).json()
     print(f"  policy_id={pol['policy_id']}  name={pol['name']}")
 
-    print("\n[2/4] provisioning 3 legit agents + 1 rogue agent")
-    legit = []
+    print("\n[2/5] provisioning 3 legit agents + 1 borderline + 1 rogue")
+    legit: list[Identity] = []
     for i in range(3):
-        ident = Identity.generate(principal_id=f"prn_{args.tenant}")
+        ident = Identity.generate(principal_id=f"prn_acme_legit_{i+1}")
         _register(ident, V, args.tenant)
         legit.append(ident)
-        print(f"  legit-{i+1:<2}  {ident.agent_id}")
-    rogue = Identity.generate(principal_id=f"prn_{args.tenant}")
+        print(f"  legit-{i+1:<2}    {ident.agent_id}")
+    borderline = Identity.generate(principal_id="prn_acme_borderline")
+    _register(borderline, V, args.tenant)
+    print(f"  borderline {borderline.agent_id}")
+    rogue = Identity.generate(principal_id="prn_acme_rogue")
     _register(rogue, V, args.tenant)
-    print(f"  rogue    {rogue.agent_id}")
+    print(f"  rogue      {rogue.agent_id}")
 
-    print(f"\n[3/4] warm-up: each legit agent fires {args.warmup} envelopes")
+    print(f"\n[3/5] warm-up: each legit agent fires {args.warmup} canned envelopes (fills the window)")
     for _ in range(args.warmup):
         for a in legit:
-            _submit(a, *_pick(LEGIT_ACTIONS), V)
-    print(f"  {args.warmup * len(legit)} envelopes submitted")
+            _submit(a, *random.choice(LEGIT_ACTIONS), V)
+        _submit(borderline, *random.choice(LEGIT_ACTIONS), V)
+    print(f"  {args.warmup * (len(legit) + 1)} envelopes submitted")
 
-    print("\n[4/4] rogue fires 3 envelopes (policy will deny some, anomaly will score others)")
-    for _ in range(3):
-        name, params = _pick(ROGUE_ACTIONS)
+    print(f"\n[4/5] visible legit traffic: {args.show} envelopes per legit agent")
+    for _ in range(args.show):
+        for a in legit:
+            v = _submit(a, *random.choice(LEGIT_ACTIONS), V)
+            score = v.get("anomaly_score")
+            print(f"  legit {a.agent_id[:18]}.. score={score}")
+            time.sleep(0.02)
+
+    print(f"\n[5a/5] borderline agent fires {args.borderline} oddly-shaped envelopes (anomaly should rise)")
+    for _ in range(args.borderline):
+        name, params = random.choice(BORDERLINE_ACTIONS)
+        v = _submit(borderline, name, params, V)
+        score = v.get("anomaly_score")
+        print(f"  borderline {name:<18} score={score}")
+        time.sleep(0.02)
+
+    print(f"\n[5b/5] rogue fires {args.rogue} envelopes (policy denies them on the cryptographic side)")
+    for _ in range(args.rogue):
+        name, params = random.choice(ROGUE_ACTIONS)
         v = _submit(rogue, name, params, V)
-        flag = "DENY" if not v["valid"] else f"score={v.get('anomaly_score')}"
-        print(f"  {name:<22} {flag}")
-        time.sleep(0.05)
+        flag = f"DENY ({v['reason']})" if not v["valid"] else f"score={v.get('anomaly_score')}"
+        print(f"  rogue {name:<22} {flag}")
+        time.sleep(0.02)
 
     root = httpx.get(f"{V}/v1/audit/root").json()
     print(f"\nDone. Audit root: {root['root'][:24]}…  tree_size={root['tree_size']}")
     print("Open the dashboard at http://localhost:3000 to see the live stream.")
-
-
-def _pick(seq):
-    import random
-    return random.choice(seq)
 
 
 if __name__ == "__main__":
