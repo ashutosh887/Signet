@@ -1,0 +1,28 @@
+menu "Signet Edge"
+
+    config SIGNET_WIFI_SSID
+        string "Wi-Fi SSID"
+        default "wifi-ssid"
+        help
+            SSID the device joins on boot.
+
+    config SIGNET_WIFI_PASS
+        string "Wi-Fi password"
+        default "wifi-password"
+        help
+            WPA2 password.
+
+    config SIGNET_GATEWAY_URL
+        string "Gateway URL"
+        default "http://10.0.0.10:8001/edge/trigger"
+        help
+            HTTP(S) endpoint the device POSTs voice triggers to. The gateway
+            holds the ML-DSA-44 signing key for this device.
+
+    config SIGNET_DEVICE_AGENT_ID
+        string "Device agent_id"
+        default "agt_esp32c3_demo"
+        help
+            agent_id registered with the verifier for this physical device.
+
+endmenu
