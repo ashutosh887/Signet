@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache liboqs
+        id: liboqs-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/_oqs
+          key: liboqs-0.15.0-${{ runner.os }}
+
+      - name: Build liboqs
+        if: steps.liboqs-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+          git clone --branch 0.15.0 --depth 1 https://github.com/open-quantum-safe/liboqs.git /tmp/liboqs
+          cmake -G Ninja -S /tmp/liboqs -B /tmp/liboqs/build \
+            -DBUILD_SHARED_LIBS=ON -DOQS_BUILD_ONLY_LIB=ON \
+            -DOQS_MINIMAL_BUILD="SIG_ml_dsa_44;KEM_ml_kem_768" \
+            -DCMAKE_INSTALL_PREFIX=$HOME/_oqs -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/liboqs/build --parallel
+          cmake --install /tmp/liboqs/build
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./sdk-python -e ./verifier pytest httpx
+
+      - name: SDK smoke test
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/../_oqs/lib
+        run: |
+          python - <<'PY'
+          import signet
+          identity = signet.Identity.generate(principal_id="prn_ci")
+          env = signet.Envelope(
+              agent_id=identity.agent_id,
+              principal_id=identity.principal_id,
+              action={"type": "tool_call", "name": "ci", "params": {}},
+          )
+          env.sign(identity)
+          assert env.signature["algorithm"] == "ML-DSA-44"
+          assert "hybrid_classical_value" in env.signature
+          print("SDK smoke OK")
+          PY
+
+      - name: Round-trip against running verifier
+        env:
+          SIGNET_SKIP_TRAIN: "1"
+          SIGNET_DB_PATH: /tmp/signet_ci.db
+          LD_LIBRARY_PATH: ${{ github.workspace }}/../_oqs/lib
+        run: |
+          rm -f /tmp/signet_ci.db
+          python -m uvicorn signet_verifier.main:app --port 8000 --log-level warning &
+          VPID=$!
+          sleep 4
+          python - <<'PY'
+          import signet
+          i = signet.Identity.generate(principal_id="prn_ci")
+          signet.register(i)
+          e = signet.Envelope(agent_id=i.agent_id, principal_id=i.principal_id,
+                              action={"type":"tool_call","name":"ci","params":{}})
+          e.sign(i)
+          v = signet.submit(e)
+          assert v["valid"] is True, v
+          PY
+          kill $VPID || true
