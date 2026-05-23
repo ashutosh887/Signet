@@ -119,7 +119,53 @@ A conforming verifier MUST:
 1. Append every accepted envelope to a tamper-evident log.
 2. Periodically anchor the Merkle root of the log to a public timestamping
    authority (Roughtime per [I-D.roughtime] is RECOMMENDED).
-3. Expose proof-of-inclusion at `GET /v1/envelopes/{id}/proof`.
+3. Expose proof-of-inclusion at `GET /v1/envelopes/{id}/proof` with leaf
+   hash `H(0x00 || canonical_envelope_json)` and internal node hash
+   `H(0x01 || left || right)` using SHA3-256 [FIPS202]. Odd levels
+   duplicate the last leaf (RFC 6962 §2.1 variant).
+4. Expose the current Merkle root and tree size at `GET /v1/audit/root`.
+
+## 7a. Hybrid Key Encapsulation
+
+Verifiers SHOULD expose hybrid KEM endpoints for session establishment:
+
+```
+POST /v1/kem/keygen          -> (kem_id, pq_public, classical_public)
+POST /v1/kem/encapsulate     -> (pq_ciphertext, classical_ephemeral, shared_secret)
+POST /v1/kem/decapsulate     -> shared_secret
+```
+
+The mandatory-to-implement scheme is **X25519 + ML-KEM-768**. The combined
+shared secret is computed as:
+
+```
+shared = SHA3-256("signet-hybrid-kem|" || x25519_ss || "|" || mlkem_ss)
+```
+
+Hybrid mode is REQUIRED during the 2027–2033 migration window per
+[NSA-CNSA2].
+
+## 7b. Multi-tenancy
+
+A conforming multi-tenant verifier MUST:
+
+- Bind every agent, envelope, audit-log entry, webhook, policy, and KEM
+  key to a `tenant_id` string.
+- Resolve the caller's `tenant_id` from a deployment-defined token
+  (Signet reference: `X-API-Key` header) and reject requests where the
+  resolved tenant does not match the queried agent's tenant
+  (`reason: tenant_mismatch`).
+- Treat `tenant_id == "default"` as the single-tenant fallback when no
+  authentication is configured.
+
+## 7c. Policy Engine
+
+A conforming verifier MAY implement a declarative policy layer evaluated
+after signature verification. Policies are tenant-scoped; the
+mandatory-to-evaluate match fields are `agent_id`, `principal_id`,
+`action.type`, `action.name`, `action.capability`, and per-key `params`
+matchers. Glob patterns ([POSIX fnmatch]) apply to string fields.
+Policy violations MUST surface a `policy_rule_id` in the verdict.
 
 ## 8. Behavior Attestation (informative)
 
@@ -145,12 +191,26 @@ This document requests registration of:
 - Algorithm identifier `ML-DSA-44` in the COSE/JOSE algorithm registry
   (already proposed for [I-D.ietf-cose-dilithium]).
 
-## 11. Acknowledgments
+## 11. Implementation Notes
+
+The Signet reference implementation
+(`github.com/ashutoshjha/signet`) ships:
+
+- A Python SDK (`liboqs-python` + `cryptography`) and a TypeScript SDK
+  (`@noble/post-quantum` + `@noble/curves`). Both produce bit-compatible
+  canonical envelopes; cross-SDK verification is part of the test suite.
+- A FastAPI verifier with multi-tenant SQLite storage, Merkle audit log,
+  policy engine, hybrid KEM endpoints, Prometheus metrics, structured
+  JSON logging, and HMAC-signed webhooks.
+- A Next.js dashboard exposing live envelopes, revocation, anomaly heat
+  map, and Merkle inclusion-proof inspection.
+
+## 12. Acknowledgments
 
 The author thanks the IETF PQUIP WG, the NIST PQC standardization team,
 and the open-quantum-safe project for `liboqs`.
 
-## 12. References
+## 13. References
 
 ### Normative
 

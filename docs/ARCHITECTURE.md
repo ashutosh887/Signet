@@ -7,13 +7,15 @@ flowchart TB
   subgraph Clients["Clients"]
     A1["LLM Agent<br/>(Claude / GPT / Gemini)"]
     A2["Edge Agent<br/>(ESP32-C3 + mic)"]
-    A3["MCP Server<br/>(Phase 2)"]
+    A3["MCP / A2A server<br/>(SignetMCPMiddleware)"]
   end
 
-  subgraph SDK["Signet SDK (Python today, TS/Go/Rust later)"]
-    S1["Identity.generate<br/>(ML-DSA-44)"]
-    S2["Envelope.sign<br/>(JCS canonical JSON + signature)"]
+  subgraph SDK["Signet SDKs (Python, TypeScript)"]
+    S1["Identity.generate<br/>(ML-DSA-44 + Ed25519)"]
+    S2["Envelope.sign<br/>(JCS canonical JSON + hybrid signature)"]
     S3["wrap / delegate<br/>(capability chains)"]
+    S4["Signer protocol<br/>(Software / PKCS11 HSM)"]
+    S5["kem.encapsulate / decapsulate<br/>(X25519 + ML-KEM-768)"]
   end
 
   subgraph GW["Edge Gateway (Phase 0 Plan B)"]
@@ -21,10 +23,17 @@ flowchart TB
   end
 
   subgraph Verifier["FastAPI Verifier (identity plane)"]
-    V1["signature verify<br/>(liboqs ML-DSA-44)"]
+    V1["signature verify<br/>(liboqs ML-DSA-44 + Ed25519)"]
     V2["agent registry<br/>+ revocation"]
-    V3["SQLite envelope log<br/>(WAL, append-only)"]
+    V3["SQLite envelope log<br/>(WAL, append-only, multi-tenant)"]
     V4["WebSocket fan-out<br/>(/ws/stream)"]
+    V5["Merkle root + inclusion proofs<br/>(SHA3-256)"]
+    V6["KEM endpoints<br/>(X25519 + ML-KEM-768)"]
+    V7["Webhooks + Prometheus + JSON logs"]
+  end
+
+  subgraph Behaviour["Behaviour plane"]
+    P1["Policy engine<br/>(per-tenant allow/deny rules)"]
   end
 
   subgraph QAE["Anomaly Engine (behavior plane)"]
@@ -47,22 +56,34 @@ flowchart TB
   A3 --> SDK
   A2 --> GW
   GW --> SDK
-  SDK -- "signed envelopes (HTTPS)" --> Verifier
+  SDK -- "signed envelopes (HTTPS, x-api-key per tenant)" --> Verifier
+  Verifier --> Behaviour
+  Behaviour -- "allow / deny" --> Verifier
   Verifier --> QAE
   Verifier --> Dash
-  QAE -- "score per envelope" --> Verifier
+  QAE -- "score + top features" --> Verifier
 ```
 
 ## Identity plane
 
-- **SDK** holds the ML-DSA-44 secret key and produces canonical, signed
-  envelopes. JCS-shaped canonicalisation (`json.dumps(sort_keys=True,
-  separators=(",", ":"))` for Phase 0; RFC 8785-strict in Phase 1).
+- **SDKs** (Python + TypeScript) hold the ML-DSA-44 secret key and produce
+  canonical, signed envelopes. Canonicalisation:
+  `json.dumps(sort_keys=True, separators=(",", ":"))` in Python and a
+  bit-compatible recursive sort in TypeScript. Envelopes signed in TS
+  verify against the Python verifier without modification.
+- **HSM signer abstraction.** `signet.hsm.Signer` is a duck-typed protocol;
+  the SDK ships `SoftwareSigner` (in-process liboqs) and a `PKCS11Signer`
+  stub for HSM deployments.
 - **Verifier** stores the public key on registration and checks every
   submission with `oqs.Signature("ML-DSA-44").verify(payload, sig, pubkey)`.
-- **Revocation** is a single boolean column in the SQLite agents table for
-  Phase 0; the in-memory cache flips immediately and is broadcast on the
-  WebSocket. Phase 1 swaps in a Sparse Merkle Tree with proof-of-non-membership.
+- **Revocation** is a single column in the SQLite agents table; the
+  in-memory cache flips immediately and is broadcast on the WebSocket.
+- **Multi-tenancy.** Every row carries a `tenant_id`. Per-tenant API keys
+  via `SIGNET_API_KEYS` JSON map drive the auth middleware; cross-tenant
+  envelope verify returns `reason: tenant_mismatch`.
+- **Hybrid KEM.** `/v1/kem/{keygen,encapsulate,decapsulate}` uses X25519 +
+  ML-KEM-768; the combined secret is `SHA3-256("signet-hybrid-kem|" ||
+  x25519_ss || "|" || mlkem_ss)`.
 
 ## Behavior plane
 
@@ -74,13 +95,24 @@ flowchart TB
   whichever wins on a stratified held-out split.
 - A cold-start guardrail (out-of-vocabulary action ratio) is OR-ed with the
   ML score so partial windows can't sneak unknown actions past the detector.
+- **Policy engine** evaluates declarative allow/deny rules per tenant after
+  the cryptographic check. First-match-wins per policy; any policy returning
+  deny blocks the envelope and surfaces `policy_rule_id` in the verdict.
+  Match supports glob patterns on action name, capability, params.
 
 ## Observability plane
 
 - WebSocket `/ws/stream` broadcasts every accepted envelope and every
   revocation as JSON.
-- Dashboard subscribes once, keeps a 80-envelope ring buffer in memory, polls
-  `/v1/agents` every 5 s for revocation state.
+- Dashboard subscribes once, keeps an 80-envelope ring buffer in memory,
+  polls `/v1/agents` every 5 s for revocation state.
+- Clicking a green envelope row opens a Merkle inclusion-proof modal that
+  shows root, leaf hash, leaf index, and the sibling path.
+- Webhooks fire on `envelope.verified`, `envelope.rejected`, `agent.revoked`,
+  `anomaly.detected` (score ≥ 0.7). HMAC-SHA256 signature in
+  `X-Signet-Signature`, tenant-scoped.
+- Prometheus exposition at `/metrics`. Structured JSON logs to stdout
+  (level via `SIGNET_LOG_LEVEL`).
 - All identifiers (`agt_*`, `env_*`, `prn_*`) render in monospace.
 - Dark mode is the only mode.
 
