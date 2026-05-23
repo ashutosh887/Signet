@@ -52,6 +52,11 @@ trap cleanup INT TERM
 [ -d .venv ] || { red "ERROR: .venv missing — see README §Installation"; exit 1; }
 [ -d dashboard/node_modules ] || { red "ERROR: dashboard/node_modules missing — cd dashboard && pnpm install"; exit 1; }
 
+if ! .venv/bin/python -c "import signet_verifier, multipart" >/dev/null 2>&1; then
+  yellow "==> refreshing verifier dependencies (stale venv detected)"
+  .venv/bin/pip install -e ./verifier >/dev/null
+fi
+
 if [ -f .env ]; then
   set -a; . ./.env; set +a
 fi
