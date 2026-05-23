@@ -37,14 +37,17 @@ jobs:
           cmake --build /tmp/liboqs/build --parallel
           cmake --install /tmp/liboqs/build
 
+      - name: Export liboqs paths
+        run: |
+          echo "LD_LIBRARY_PATH=$HOME/_oqs/lib" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=$HOME/_oqs/lib" >> "$GITHUB_ENV"
+
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
           pip install -e ./sdk-python -e ./verifier pytest httpx
 
       - name: SDK smoke test
-        env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/../_oqs/lib
         run: |
           python - <<'PY'
           import signet
@@ -64,12 +67,23 @@ jobs:
         env:
           SIGNET_SKIP_TRAIN: "1"
           SIGNET_DB_PATH: /tmp/signet_ci.db
-          LD_LIBRARY_PATH: ${{ github.workspace }}/../_oqs/lib
         run: |
           rm -f /tmp/signet_ci.db
-          python -m uvicorn signet_verifier.main:app --port 8000 --log-level warning &
+          python -m uvicorn signet_verifier.main:app --port 8000 --log-level warning >/tmp/verifier.log 2>&1 &
           VPID=$!
-          sleep 4
+          trap 'kill $VPID 2>/dev/null || true; echo "--- verifier log ---"; cat /tmp/verifier.log || true' EXIT
+          for i in $(seq 1 40); do
+            if curl -sf http://localhost:8000/health >/dev/null; then
+              echo "verifier up after ${i} attempts"
+              break
+            fi
+            if ! kill -0 $VPID 2>/dev/null; then
+              echo "verifier process died"
+              exit 1
+            fi
+            sleep 0.5
+          done
+          curl -sf http://localhost:8000/health >/dev/null || { echo "verifier never became ready"; exit 1; }
           python - <<'PY'
           import signet
           i = signet.Identity.generate(principal_id="prn_ci")
@@ -79,5 +93,5 @@ jobs:
           e.sign(i)
           v = signet.submit(e)
           assert v["valid"] is True, v
+          print("Round-trip OK")
           PY
-          kill $VPID || true
