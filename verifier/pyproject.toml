@@ -16,6 +16,7 @@ dependencies = [
   "cryptography>=43",
   "prometheus-client>=0.21",
   "httpx>=0.28",
+  "python-multipart>=0.0.9",
 ]
 
 [build-system]

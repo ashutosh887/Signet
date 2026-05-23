@@ -148,8 +148,10 @@ flowchart LR
    models. Heatmap stays green; dashboard shows natural-language intents.
 2. **Button press on the ESP32-S3** → edge gateway signs ML-DSA-44 envelope →
    appears on the dashboard within ~2 seconds with a hardware origin badge.
-3. **(Hardware-fail fallback)** `python scripts/voice_demo.py` — Mac mic →
-   ElevenLabs Scribe → LLM plan → signed envelope. Identical wire format.
+3. **(Hardware-fail fallback)** Click the dashboard's `🎤 Voice` button —
+   browser mic → `/v1/demo/voice-fire` → ElevenLabs Scribe → LLM plan →
+   signed envelope. Identical wire format. (Or `python scripts/voice_demo.py`
+   for the file-based CLI equivalent.)
 4. Toggle rogue agent on. Heatmap goes **green → yellow → red** within 3
    envelopes / ~6 s. (Quantum kernel scored 0.95 vs 0.09 in dry runs.)
 5. Click **Revoke**. Rogue's next envelope returns `verdict: revoked`.

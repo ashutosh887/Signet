@@ -145,4 +145,23 @@ export async function fireLLMAction(prompt: string): Promise<LLMFireResult> {
   return r.json();
 }
 
-export const FIRMWARE_PATH = process.env.NEXT_PUBLIC_FIRMWARE_PATH ?? "";
+export const FIRMWARE_PATH =
+  process.env.NEXT_PUBLIC_FIRMWARE_PATH ??
+  "/Users/ashutosh887/Desktop/ashutosh887/signet/firmware-arduino";
+
+export type VoiceFireResult = LLMFireResult & { transcript: string };
+
+export async function fireVoiceAction(audio: Blob, filename = "voice.webm"): Promise<VoiceFireResult> {
+  const fd = new FormData();
+  fd.append("audio", audio, filename);
+  const r = await fetch(`${VERIFIER_HTTP}/v1/demo/voice-fire`, {
+    method: "POST",
+    headers: { ...authHeaders() },
+    body: fd,
+  });
+  if (!r.ok) {
+    const txt = await r.text();
+    throw new Error(`voice-fire HTTP ${r.status}: ${txt}`);
+  }
+  return r.json();
+}

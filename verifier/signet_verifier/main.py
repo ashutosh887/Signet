@@ -17,10 +17,13 @@ from dotenv import load_dotenv
 from fastapi import (
     Depends,
     FastAPI,
+    File,
+    Form,
     Header,
     HTTPException,
     Request,
     Response,
+    UploadFile,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -1000,6 +1003,81 @@ async def demo_llm_fire(payload: DemoFireRequest, request: Request) -> dict[str,
         "envelope_id": env.envelope_id,
         "agent_id": identity.agent_id,
         "provider": provider,
+        "action": action,
+        "verdict": verdict.model_dump(),
+    }
+
+
+def _transcribe_elevenlabs(audio_bytes: bytes, filename: str, content_type: str) -> str:
+    key = os.environ.get("ELEVENLABS_API_KEY")
+    if not key:
+        raise HTTPException(
+            400,
+            "no STT provider configured — set ELEVENLABS_API_KEY in the verifier environment",
+        )
+    import httpx as _httpx
+    r = _httpx.post(
+        "https://api.elevenlabs.io/v1/speech-to-text",
+        headers={"xi-api-key": key},
+        data={"model_id": "scribe_v1"},
+        files={"file": (filename or "audio.webm", audio_bytes, content_type or "audio/webm")},
+        timeout=60.0,
+    )
+    if r.status_code >= 400:
+        raise HTTPException(502, f"elevenlabs transcribe failed: {r.status_code} {r.text}")
+    return (r.json().get("text") or "").strip()
+
+
+@app.post("/v1/demo/voice-fire")
+async def demo_voice_fire(
+    request: Request,
+    audio: UploadFile = File(...),
+    provider: str | None = Form(default=None),
+) -> dict[str, Any]:
+    chosen = provider or _resolve_demo_provider()
+    if not chosen:
+        raise HTTPException(
+            400,
+            "no LLM provider configured — set OPENAI_API_KEY or GEMINI_API_KEY in the verifier environment",
+        )
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(400, "empty audio upload")
+
+    import asyncio as _asyncio
+    loop = _asyncio.get_running_loop()
+    transcript = await loop.run_in_executor(
+        None,
+        _transcribe_elevenlabs,
+        audio_bytes,
+        audio.filename or "audio.webm",
+        audio.content_type or "audio/webm",
+    )
+    if not transcript:
+        raise HTTPException(422, "transcription returned empty text")
+
+    identity = _get_demo_identity(request)
+    from signet import Envelope as _SDKEnvelope
+    try:
+        action = await loop.run_in_executor(None, _plan_with_llm, transcript, chosen)
+    except Exception as exc:
+        raise HTTPException(502, f"llm planner failed: {exc}")
+    action = {**action, "voice_transcript": transcript}
+
+    sdk_env = _SDKEnvelope(
+        agent_id=identity.agent_id,
+        principal_id=identity.principal_id,
+        action=action,
+    )
+    sdk_env.sign(identity)
+    env_dict = sdk_env.to_dict()
+    env = Envelope(**env_dict)
+    verdict = await submit_envelope(env, request)
+    return {
+        "envelope_id": env.envelope_id,
+        "agent_id": identity.agent_id,
+        "provider": chosen,
+        "transcript": transcript,
         "action": action,
         "verdict": verdict.model_dump(),
     }

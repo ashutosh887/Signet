@@ -250,7 +250,7 @@ signet/
 ├── verifier/                   FastAPI verifier service
 │   ├── pyproject.toml
 │   └── signet_verifier/
-│       ├── main.py             FastAPI app, endpoints, middleware, /v1/demo/llm-fire
+│       ├── main.py             FastAPI app, endpoints, middleware, /v1/demo/llm-fire, /v1/demo/voice-fire
 │       ├── db.py               SQLite schema + accessors + migrations (tenancy)
 │       ├── anomaly.py          PennyLane quantum kernel + RBF baseline + explain
 │       ├── merkle.py           SHA3-256 Merkle log + inclusion proofs
@@ -739,8 +739,17 @@ one).
 
 ## Voice trigger demo
 
-`scripts/voice_demo.py` covers the ESP32 step of the demo path without
-hardware — point it at any audio file, get a signed envelope:
+Two ways to drive the voice path:
+
+**A. Browser mic — `🎤 Voice` button on the dashboard.** Tap to start
+recording, tap again to stop. The dashboard POSTs the audio blob to
+`/v1/demo/voice-fire`; the verifier transcribes with ElevenLabs Scribe,
+plans with the configured LLM, signs the envelope with ML-DSA-44, and
+returns the transcript + verdict. Requires `ELEVENLABS_API_KEY` plus one
+of `OPENAI_API_KEY` / `GEMINI_API_KEY` in the verifier environment.
+
+**B. CLI — `scripts/voice_demo.py`** covers the ESP32 step of the demo
+path without hardware; point it at any audio file:
 
 ```bash
 # generate a quick clip on macOS (or use any wav/mp3 you have)

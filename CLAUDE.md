@@ -23,6 +23,7 @@ Verify against the code before recommending — file paths can rename.
 - Webhooks: `/v1/webhooks` (POST/GET), `/v1/webhooks/{id}` (DELETE) — HMAC-SHA256 in `X-Signet-Signature`
 - Policy engine: `/v1/policies` (POST/GET), `/v1/policies/{id}` (DELETE), `/v1/policies/evaluate`
 - KEM: `/v1/kem/keygen`, `/v1/kem/encapsulate`, `/v1/kem/decapsulate` — hybrid X25519 + ML-KEM-768
+- Demo: `/v1/demo/llm-fire` (text prompt → LLM plan → signed envelope), `/v1/demo/voice-fire` (multipart audio → ElevenLabs Scribe → LLM plan → signed envelope; transcript preserved in `action.voice_transcript`)
 - Ops: `/health`, `/metrics` (Prometheus), `/ws/stream` (WebSocket)
 
 Tenancy: every agent/envelope/webhook/policy/kem-key row carries `tenant_id`. When `SIGNET_API_KEYS` is set (JSON map `{"key":"tenant"}` or comma-separated), the middleware resolves the caller's tenant from `X-API-Key` and filters list/audit/revoke/verify endpoints to that tenant. No API-key configuration → single `default` tenant, backward-compatible.
@@ -45,7 +46,7 @@ Tenancy: every agent/envelope/webhook/policy/kem-key row carries `tenant_id`. Wh
 
 **Sparse Merkle Tree revocation (`verifier/signet_verifier/smt.py`).** 256-deep tree of `SHA3-256(agent_id)` → presence-marker leaves. Same proof shape verifies both inclusion (revoked) and non-membership (not revoked); leaf hash differs. Endpoints: `GET /v1/revocations/root`, `GET /v1/agents/{id}/revocation-proof`. The boolean column remains the fast path; SMT is the federated/cross-verifier-checkable artifact.
 
-**Dashboard (`dashboard/`).** Next.js 16, Tailwind v4, dark mode default. Live envelope stream via WebSocket, agent registry with revoke button, anomaly heatmap, AUC report card, Merkle inclusion-proof modal triggered by clicking a stream row.
+**Dashboard (`dashboard/`).** Next.js 16, Tailwind v4, dark mode default. Live envelope stream via WebSocket, agent registry with revoke button, anomaly heatmap, AUC report card, Merkle inclusion-proof modal triggered by clicking a stream row. "Fire LLM action" card has both a text input and a `🎤 Voice` button — the mic uses `MediaRecorder` in-browser and POSTs to `/v1/demo/voice-fire`. Footer always links to the PlatformIO firmware via `vscode://file/...` (override path with `NEXT_PUBLIC_FIRMWARE_PATH`).
 
 **ESP32-S3 firmware (`firmware-arduino/`).** Primary device: PlatformIO/Arduino, BOOT-button trigger → gateway-side ML-DSA-44 signing. **ESP32-C3 firmware (`firmware/`).** Plan B: ESP-IDF, I²S voice trigger → gateway-side signing. On-device pqm4 port remains Phase 2.
 

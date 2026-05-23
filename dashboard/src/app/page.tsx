@@ -16,6 +16,7 @@ import {
   fetchAudit,
   fetchInclusionProof,
   fireLLMAction,
+  fireVoiceAction,
   getApiKey,
   revokeAgent,
   setApiKey,
@@ -107,7 +108,12 @@ export default function Dashboard() {
   const [fireBusy, setFireBusy] = useState(false);
   const [fireResult, setFireResult] = useState<LLMFireResult | null>(null);
   const [fireError, setFireError] = useState<string | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const [transcript, setTranscript] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
     const stored = getApiKey();
@@ -211,6 +217,7 @@ export default function Dashboard() {
     setFireBusy(true);
     setFireError(null);
     setFireResult(null);
+    setTranscript(null);
     try {
       const res = await fireLLMAction(firePrompt.trim());
       setFireResult(res);
@@ -219,6 +226,66 @@ export default function Dashboard() {
     } finally {
       setFireBusy(false);
     }
+  };
+
+  const startRecording = async () => {
+    if (recording || voiceBusy) return;
+    setFireError(null);
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setFireError("Mic capture not supported in this browser.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime =
+        typeof MediaRecorder !== "undefined" &&
+        MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : "";
+      const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+      };
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
+        chunksRef.current = [];
+        if (blob.size === 0) {
+          setFireError("Empty recording — try again.");
+          return;
+        }
+        setVoiceBusy(true);
+        setFireResult(null);
+        setTranscript(null);
+        try {
+          const res = await fireVoiceAction(blob);
+          setFireResult(res);
+          setTranscript(res.transcript);
+          setFirePrompt(res.transcript);
+        } catch (e) {
+          setFireError((e as Error).message);
+        } finally {
+          setVoiceBusy(false);
+        }
+      };
+      recorderRef.current = rec;
+      rec.start();
+      setRecording(true);
+    } catch (e) {
+      setFireError((e as Error).message || "mic permission denied");
+    }
+  };
+
+  const stopRecording = () => {
+    const rec = recorderRef.current;
+    if (rec && rec.state !== "inactive") rec.stop();
+    setRecording(false);
+  };
+
+  const onMicClick = () => {
+    if (recording) stopRecording();
+    else startRecording();
   };
 
   const onRevoke = async (id: string) => {
@@ -380,10 +447,29 @@ export default function Dashboard() {
             placeholder="What should the agent do?"
             className="flex-1 bg-neutral-900/60 border border-neutral-800 rounded-md px-3 py-2 text-[13px] text-neutral-100 placeholder:text-neutral-600 focus:outline-none focus:border-neutral-700"
           />
-          <Button onClick={onFire} disabled={fireBusy || !firePrompt.trim()}>
+          <Button onClick={onFire} disabled={fireBusy || voiceBusy || !firePrompt.trim()}>
             {fireBusy ? "Planning…" : "Fire LLM action"}
           </Button>
+          <Button
+            onClick={onMicClick}
+            disabled={fireBusy || voiceBusy}
+            title="Speak your request — recorded in-browser, transcribed by ElevenLabs Scribe, planned by the LLM, then signed and submitted"
+          >
+            {voiceBusy
+              ? "Transcribing…"
+              : recording
+                ? "⏹ Stop & send"
+                : "🎤 Voice"}
+          </Button>
         </div>
+        {transcript && (
+          <div className="text-[12px] text-neutral-400">
+            <span className="text-neutral-500 uppercase tracking-[0.08em] text-[10px] mr-2">
+              Transcript
+            </span>
+            <span className="text-neutral-200">“{transcript}”</span>
+          </div>
+        )}
         {fireError && (
           <div className="text-rose-400 text-[12px] wrap-break-word">
             {fireError}
@@ -798,15 +884,13 @@ export default function Dashboard() {
           >
             Merkle root
           </a>
-          {FIRMWARE_PATH && (
-            <a
-              className="hover:text-neutral-300"
-              href={`vscode://file/${FIRMWARE_PATH}`}
-              title="Open the ESP32 firmware in VS Code / PlatformIO"
-            >
-              Open firmware in VS Code
-            </a>
-          )}
+          <a
+            className="hover:text-neutral-300"
+            href={`vscode://file/${FIRMWARE_PATH}/platformio.ini`}
+            title="Open the ESP32-S3 PlatformIO project in VS Code"
+          >
+            Open PlatformIO firmware
+          </a>
         </span>
       </footer>
     </main>
