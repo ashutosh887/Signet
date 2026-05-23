@@ -13,7 +13,9 @@ import {
   fetchAnomalyReport,
   fetchAudit,
   fetchInclusionProof,
+  getApiKey,
   revokeAgent,
+  setApiKey,
 } from "@/lib/api";
 import {
   Badge,
@@ -57,7 +59,22 @@ export default function Dashboard() {
   const [connected, setConnected] = useState(false);
   const [proof, setProof] = useState<InclusionProof | null>(null);
   const [proofError, setProofError] = useState<string | null>(null);
+  const [apiKey, setApiKeyState] = useState<string>("");
   const wsRef = useRef<WebSocket | null>(null);
+
+  useEffect(() => {
+    const stored = getApiKey();
+    if (stored) setApiKeyState(stored);
+  }, []);
+
+  const onApiKeyChange = (next: string) => {
+    setApiKeyState(next);
+    setApiKey(next || null);
+    fetchAgents().then(setAgents).catch(() => setAgents([]));
+    fetchAudit()
+      .then((rows) => setStream(rows.slice(0, MAX_STREAM)))
+      .catch(() => setStream([]));
+  };
 
   const showProof = async (envelope_id: string) => {
     setProofError(null);
@@ -151,6 +168,13 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2 items-center">
+          <input
+            type="text"
+            placeholder="x-api-key (optional)"
+            value={apiKey}
+            onChange={(e) => onApiKeyChange(e.target.value)}
+            className="bg-neutral-900/60 border border-neutral-800 rounded-md px-2 py-1 text-[11px] mono text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:border-neutral-700 w-52"
+          />
           <Badge tone={connected ? "ok" : "bad"}>
             ws · {connected ? "live" : "offline"}
           </Badge>
