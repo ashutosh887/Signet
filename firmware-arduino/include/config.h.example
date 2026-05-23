@@ -1,0 +1,9 @@
+#pragma once
+
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#define WIFI_PASS "YOUR_WIFI_PASSWORD"
+
+#define GATEWAY_URL "http://192.168.1.10:8001/edge/trigger"
+
+#define BUTTON_GPIO 0
+#define LED_GPIO    48
