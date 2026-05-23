@@ -385,7 +385,7 @@ export default function Dashboard() {
           </Button>
         </div>
         {fireError && (
-          <div className="text-rose-400 text-[12px] break-words">
+          <div className="text-rose-400 text-[12px] wrap-break-word">
             {fireError}
           </div>
         )}
