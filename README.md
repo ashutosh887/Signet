@@ -34,6 +34,8 @@ documents the **Phase 0** hackathon deliverable.
 - [MCP / A2A integration](#mcp--a2a-integration)
 - [Hybrid KEM (ML-KEM-768)](#hybrid-kem-ml-kem-768)
 - [HSM signer abstraction](#hsm-signer-abstraction)
+- [SLH-DSA root keys](#slh-dsa-root-keys)
+- [Sparse Merkle Tree revocation](#sparse-merkle-tree-revocation)
 - [Webhooks](#webhooks)
 - [Merkle audit log](#merkle-audit-log)
 - [Observability](#observability)
@@ -477,6 +479,9 @@ compatible between the two SDKs.
 | POST   | `/v1/kem/keygen`                        | Generate a hybrid X25519 + ML-KEM-768 keypair     |
 | POST   | `/v1/kem/encapsulate`                   | Encapsulate against a public-key bundle           |
 | POST   | `/v1/kem/decapsulate`                   | Decapsulate using a stored verifier-side secret   |
+| POST   | `/v1/identities/attested`               | Register an agent gated on SLH-DSA root signature |
+| GET    | `/v1/revocations/root`                  | Sparse Merkle Tree root of revoked agent IDs      |
+| GET    | `/v1/agents/{id}/revocation-proof`      | SMT (non-)membership proof for an agent           |
 | WS     | `/ws/stream`                            | Live envelope and revocation event stream         |
 
 Pydantic models and response schemas are auto-published at `/docs` (Swagger UI)
@@ -630,6 +635,50 @@ pkcs = PKCS11Signer(slot=0, label="ml-dsa-44-key-1")
 `PKCS11Signer` ships as a stub that raises `NotImplementedError` until you
 wire it to your vendor library; the interface is identical to
 `SoftwareSigner` so the rest of the SDK doesn't change.
+
+---
+
+## SLH-DSA root keys
+
+Long-lived trust anchors use **FIPS 205 SLH-DSA-SHA2-128s** (hash-based,
+no lattice assumption). The root key signs short-lived ML-DSA-44 agent
+attestations; the verifier accepts an attested registration only after
+verifying the root signature.
+
+```bash
+signet root keygen --label production --out root.key
+signet keygen --principal prn_acme --out agent.key
+signet root attest --root root.key --key agent.key --register
+```
+
+`signet root attest --register` POSTs to `/v1/identities/attested`; the
+verifier re-canonicalises the payload, checks the SLH-DSA signature, and
+stores the bound ML-DSA-44 public key. Even if ML-DSA were unexpectedly
+broken, root-attested bindings remain verifiable on a hash-based primitive.
+
+Tradeoff: SLH-DSA signatures are 7,856 bytes and signing takes ~50–500 ms.
+That's why it's the registration-time primitive, not the per-envelope one.
+
+---
+
+## Sparse Merkle Tree revocation
+
+In addition to the boolean revocation column (fast path), the verifier
+exposes a 256-deep Sparse Merkle Tree of revoked agent IDs:
+
+```bash
+curl http://localhost:8000/v1/revocations/root
+curl http://localhost:8000/v1/agents/agt_xxx/revocation-proof
+```
+
+The proof returns 256 sibling hashes plus a leaf hash. The leaf is
+`PRESENT` for revoked agents (inclusion proof) and `EMPTY_LEAF` for
+non-revoked agents (proof of non-membership). Both verify client-side
+with `signet_verifier.smt.verify_proof()`.
+
+Federated verifiers can pull `/v1/revocations/root` cheaply and exchange
+proofs to converge on revocation state without trusting each other's
+databases.
 
 ---
 
@@ -809,6 +858,8 @@ pytest tests/ -v
 | `test_tenancy.py`       | Per-tenant DB filtering + API-key lookup                 |
 | `test_webhook_hmac.py`  | Outbound HMAC-SHA256 + tenant scoping of dispatch        |
 | `test_cli.py`           | All documented `signet` subcommands parse correctly      |
+| `test_smt.py`           | Sparse Merkle Tree inclusion + non-membership proofs     |
+| `test_root.py`          | SLH-DSA root keygen + attest + verify (skips if missing) |
 
 TypeScript SDK tests run separately: `cd sdk-ts && pnpm test`.
 

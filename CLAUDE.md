@@ -43,6 +43,8 @@ Tenancy: every agent/envelope/webhook/policy/kem-key row carries `tenant_id`. Wh
 
 **Merkle audit log (`verifier/signet_verifier/merkle.py`).** SHA3-256 leaves (`H(0x00 || canonical_json)`), SHA3-256 node hashes (`H(0x01 || left || right)`), duplicate-last on odd levels. Inclusion proofs verifiable client-side (`verify_proof`) — see also Python tests `tests/test_merkle.py`.
 
+**Sparse Merkle Tree revocation (`verifier/signet_verifier/smt.py`).** 256-deep tree of `SHA3-256(agent_id)` → presence-marker leaves. Same proof shape verifies both inclusion (revoked) and non-membership (not revoked); leaf hash differs. Endpoints: `GET /v1/revocations/root`, `GET /v1/agents/{id}/revocation-proof`. The boolean column remains the fast path; SMT is the federated/cross-verifier-checkable artifact.
+
 **Dashboard (`dashboard/`).** Next.js 16, Tailwind v4, dark mode default. Live envelope stream via WebSocket, agent registry with revoke button, anomaly heatmap, AUC report card, Merkle inclusion-proof modal triggered by clicking a stream row.
 
 **ESP32-C3 firmware (`firmware/`).** I²S audio trigger → gateway-side ML-DSA-44 signing (Plan B per PRD §15). On-device pqm4 port remains Phase 1+.
@@ -67,7 +69,7 @@ Monorepo layout: `/sdk-python`, `/sdk-ts`, `/verifier`, `/dashboard`, `/firmware
 
 - Signing: **ML-DSA-44** (FIPS 204). 2420-byte signatures. Hybrid with Ed25519.
 - KEM: **ML-KEM-768** (FIPS 203), hybrid with X25519. Combined via SHA3-256.
-- Long-lived root keys: **SLH-DSA-128s** (FIPS 205). Not in core flow yet.
+- Long-lived root keys: **SLH-DSA-SHA2-128s** (FIPS 205). Lives in `signet.root` (`RootIdentity`, `attest_agent`, `verify_attestation`). Verifier endpoint `/v1/identities/attested`. CLI: `signet root {keygen,attest}`. Liboqs name in 0.15.x is `SPHINCS+-SHA2-128s-simple`.
 - AEAD: ChaCha20-Poly1305 (planned, not in critical path). KDF: HKDF-SHA3-256. Hash: SHA3-256 (Merkle).
 - Library: `liboqs` 0.15.x via `liboqs-python` (server). `@noble/post-quantum` (TS).
 
