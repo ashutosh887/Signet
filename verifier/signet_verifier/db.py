@@ -10,11 +10,14 @@ from typing import Any
 _DEFAULT_DB = Path(__file__).resolve().parent.parent / "signet.db"
 DB_PATH = Path(os.environ.get("SIGNET_DB_PATH", _DEFAULT_DB))
 
+DEFAULT_TENANT = "default"
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents (
     agent_id           TEXT PRIMARY KEY,
     principal_id       TEXT NOT NULL,
+    tenant_id          TEXT NOT NULL DEFAULT 'default',
     algorithm          TEXT NOT NULL,
     public_key         BLOB NOT NULL,
     hybrid_classical   TEXT,
@@ -28,6 +31,7 @@ CREATE TABLE IF NOT EXISTS envelopes (
     envelope_id     TEXT PRIMARY KEY,
     agent_id        TEXT NOT NULL,
     principal_id    TEXT NOT NULL,
+    tenant_id       TEXT NOT NULL DEFAULT 'default',
     action_json     TEXT NOT NULL,
     signature_json  TEXT NOT NULL,
     verdict         TEXT NOT NULL,
@@ -44,12 +48,33 @@ CREATE TABLE IF NOT EXISTS webhooks (
     url             TEXT NOT NULL,
     events          TEXT NOT NULL,
     secret          TEXT,
+    tenant_id       TEXT NOT NULL DEFAULT 'default',
     created_at      TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS api_keys (
     key_hash        TEXT PRIMARY KEY,
     label           TEXT NOT NULL,
+    tenant_id       TEXT NOT NULL DEFAULT 'default',
+    created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS policies (
+    policy_id       TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL DEFAULT 'default',
+    name            TEXT NOT NULL,
+    rules_json      TEXT NOT NULL,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS kem_keys (
+    kem_id          TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL DEFAULT 'default',
+    algorithm       TEXT NOT NULL,
+    public_key      BLOB NOT NULL,
+    secret_key      BLOB NOT NULL,
     created_at      TEXT NOT NULL
 );
 
@@ -58,6 +83,9 @@ CREATE INDEX IF NOT EXISTS envelopes_received_at_idx
 
 CREATE INDEX IF NOT EXISTS envelopes_agent_id_idx
   ON envelopes(agent_id);
+
+CREATE INDEX IF NOT EXISTS envelopes_tenant_idx
+  ON envelopes(tenant_id);
 """
 
 
@@ -74,18 +102,22 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def init(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
-    if "hybrid_classical" not in existing:
-        conn.execute("ALTER TABLE agents ADD COLUMN hybrid_classical TEXT")
-    if "hybrid_public_key" not in existing:
-        conn.execute("ALTER TABLE agents ADD COLUMN hybrid_public_key BLOB")
-    env_cols = {row[1] for row in conn.execute("PRAGMA table_info(envelopes)").fetchall()}
-    if "leaf_hash" not in env_cols:
-        conn.execute("ALTER TABLE envelopes ADD COLUMN leaf_hash TEXT")
-    if "leaf_index" not in env_cols:
-        conn.execute("ALTER TABLE envelopes ADD COLUMN leaf_index INTEGER")
+    _add_column_if_missing(conn, "agents", "hybrid_classical", "TEXT")
+    _add_column_if_missing(conn, "agents", "hybrid_public_key", "BLOB")
+    _add_column_if_missing(conn, "agents", "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
+    _add_column_if_missing(conn, "envelopes", "leaf_hash", "TEXT")
+    _add_column_if_missing(conn, "envelopes", "leaf_index", "INTEGER")
+    _add_column_if_missing(conn, "envelopes", "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
+    _add_column_if_missing(conn, "webhooks", "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
+    _add_column_if_missing(conn, "api_keys", "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
     conn.commit()
 
 
@@ -96,17 +128,19 @@ def upsert_agent(
     principal_id: str,
     algorithm: str,
     public_key: bytes,
+    tenant_id: str = DEFAULT_TENANT,
     hybrid_classical: str | None = None,
     hybrid_public_key: bytes | None = None,
 ) -> None:
     conn.execute(
         """
         INSERT INTO agents (
-            agent_id, principal_id, algorithm, public_key,
+            agent_id, principal_id, tenant_id, algorithm, public_key,
             hybrid_classical, hybrid_public_key, registered_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(agent_id) DO UPDATE SET
             principal_id      = excluded.principal_id,
+            tenant_id         = excluded.tenant_id,
             algorithm         = excluded.algorithm,
             public_key        = excluded.public_key,
             hybrid_classical  = excluded.hybrid_classical,
@@ -118,6 +152,7 @@ def upsert_agent(
         (
             agent_id,
             principal_id,
+            tenant_id,
             algorithm,
             public_key,
             hybrid_classical,
@@ -130,7 +165,7 @@ def upsert_agent(
 
 def get_agent(conn: sqlite3.Connection, agent_id: str) -> dict[str, Any] | None:
     row = conn.execute(
-        "SELECT agent_id, principal_id, algorithm, public_key,"
+        "SELECT agent_id, principal_id, tenant_id, algorithm, public_key,"
         "       hybrid_classical, hybrid_public_key,"
         "       registered_at, revoked_at, revoked_reason "
         "FROM agents WHERE agent_id = ?",
@@ -139,18 +174,25 @@ def get_agent(conn: sqlite3.Connection, agent_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def list_agents(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        "SELECT agent_id, principal_id, algorithm, hybrid_classical,"
-        "       registered_at, revoked_at, revoked_reason "
-        "FROM agents ORDER BY registered_at DESC"
-    ).fetchall()
+def list_agents(
+    conn: sqlite3.Connection, tenant_id: str | None = None
+) -> list[dict[str, Any]]:
+    sql = (
+        "SELECT agent_id, principal_id, tenant_id, algorithm, hybrid_classical,"
+        "       registered_at, revoked_at, revoked_reason FROM agents "
+    )
+    if tenant_id is not None:
+        sql += "WHERE tenant_id = ? ORDER BY registered_at DESC"
+        rows = conn.execute(sql, (tenant_id,)).fetchall()
+    else:
+        sql += "ORDER BY registered_at DESC"
+        rows = conn.execute(sql).fetchall()
     return [dict(r) for r in rows]
 
 
 def get_envelope(conn: sqlite3.Connection, envelope_id: str) -> dict[str, Any] | None:
     row = conn.execute(
-        "SELECT envelope_id, agent_id, principal_id, action_json, signature_json,"
+        "SELECT envelope_id, agent_id, principal_id, tenant_id, action_json, signature_json,"
         "       verdict, reason, anomaly_score, received_at "
         "FROM envelopes WHERE envelope_id = ?",
         (envelope_id,),
@@ -184,6 +226,7 @@ def insert_envelope(
     reason: str | None,
     anomaly_score: float | None,
     raw: dict[str, Any],
+    tenant_id: str = DEFAULT_TENANT,
     leaf_hash: str | None = None,
 ) -> tuple[str, int | None]:
     received_at = _now()
@@ -194,16 +237,17 @@ def insert_envelope(
     conn.execute(
         """
         INSERT INTO envelopes (
-            envelope_id, agent_id, principal_id, action_json, signature_json,
+            envelope_id, agent_id, principal_id, tenant_id, action_json, signature_json,
             verdict, reason, anomaly_score, received_at, raw_json,
             leaf_hash, leaf_index
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(envelope_id) DO NOTHING
         """,
         (
             envelope_id,
             agent_id,
             principal_id,
+            tenant_id,
             json.dumps(action, separators=(",", ":")),
             json.dumps(signature, separators=(",", ":")),
             verdict,
@@ -243,19 +287,30 @@ def add_webhook(
     url: str,
     events: list[str],
     secret: str | None,
+    tenant_id: str = DEFAULT_TENANT,
 ) -> None:
     conn.execute(
-        "INSERT INTO webhooks (webhook_id, url, events, secret, created_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (webhook_id, url, json.dumps(events), secret, _now()),
+        "INSERT INTO webhooks (webhook_id, url, events, secret, tenant_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (webhook_id, url, json.dumps(events), secret, tenant_id, _now()),
     )
     conn.commit()
 
 
-def list_webhooks(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        "SELECT webhook_id, url, events, created_at FROM webhooks ORDER BY created_at DESC"
-    ).fetchall()
+def list_webhooks(
+    conn: sqlite3.Connection, tenant_id: str | None = None
+) -> list[dict[str, Any]]:
+    if tenant_id is not None:
+        rows = conn.execute(
+            "SELECT webhook_id, url, events, tenant_id, created_at FROM webhooks "
+            "WHERE tenant_id = ? ORDER BY created_at DESC",
+            (tenant_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT webhook_id, url, events, tenant_id, created_at FROM webhooks "
+            "ORDER BY created_at DESC"
+        ).fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -270,10 +325,18 @@ def delete_webhook(conn: sqlite3.Connection, webhook_id: str) -> bool:
     return cur.rowcount > 0
 
 
-def webhooks_for_event(conn: sqlite3.Connection, event: str) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        "SELECT webhook_id, url, events, secret FROM webhooks"
-    ).fetchall()
+def webhooks_for_event(
+    conn: sqlite3.Connection, event: str, tenant_id: str | None = None
+) -> list[dict[str, Any]]:
+    if tenant_id is not None:
+        rows = conn.execute(
+            "SELECT webhook_id, url, events, secret FROM webhooks WHERE tenant_id = ?",
+            (tenant_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT webhook_id, url, events, secret FROM webhooks"
+        ).fetchall()
     out = []
     for r in rows:
         events = json.loads(r["events"])
@@ -282,40 +345,141 @@ def webhooks_for_event(conn: sqlite3.Connection, event: str) -> list[dict[str, A
     return out
 
 
-def add_api_key(conn: sqlite3.Connection, *, key_hash: str, label: str) -> None:
+def add_api_key(
+    conn: sqlite3.Connection,
+    *,
+    key_hash: str,
+    label: str,
+    tenant_id: str = DEFAULT_TENANT,
+) -> None:
     conn.execute(
-        "INSERT OR REPLACE INTO api_keys (key_hash, label, created_at) VALUES (?, ?, ?)",
-        (key_hash, label, _now()),
+        "INSERT OR REPLACE INTO api_keys (key_hash, label, tenant_id, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (key_hash, label, tenant_id, _now()),
     )
     conn.commit()
 
 
-def api_key_exists(conn: sqlite3.Connection, key_hash: str) -> bool:
+def api_key_tenant(conn: sqlite3.Connection, key_hash: str) -> str | None:
     row = conn.execute(
-        "SELECT 1 FROM api_keys WHERE key_hash = ?", (key_hash,)
+        "SELECT tenant_id FROM api_keys WHERE key_hash = ?", (key_hash,)
     ).fetchone()
-    return row is not None
+    return row["tenant_id"] if row else None
+
+
+def api_key_exists(conn: sqlite3.Connection, key_hash: str) -> bool:
+    return api_key_tenant(conn, key_hash) is not None
 
 
 def recent_envelopes(
-    conn: sqlite3.Connection, limit: int = 100, agent_id: str | None = None
+    conn: sqlite3.Connection,
+    limit: int = 100,
+    agent_id: str | None = None,
+    tenant_id: str | None = None,
 ) -> list[dict[str, Any]]:
+    where: list[str] = []
+    params: list[Any] = []
+    if agent_id:
+        where.append("agent_id = ?")
+        params.append(agent_id)
+    if tenant_id is not None:
+        where.append("tenant_id = ?")
+        params.append(tenant_id)
     sql = (
-        "SELECT envelope_id, agent_id, principal_id, action_json, verdict, reason,"
+        "SELECT envelope_id, agent_id, principal_id, tenant_id, action_json, verdict, reason,"
         "       anomaly_score, received_at FROM envelopes "
     )
-    params: tuple[Any, ...]
-    if agent_id:
-        sql += "WHERE agent_id = ? ORDER BY received_at DESC LIMIT ?"
-        params = (agent_id, limit)
-    else:
-        sql += "ORDER BY received_at DESC LIMIT ?"
-        params = (limit,)
+    if where:
+        sql += "WHERE " + " AND ".join(where) + " "
+    sql += "ORDER BY received_at DESC LIMIT ?"
+    params.append(limit)
 
-    rows = conn.execute(sql, params).fetchall()
+    rows = conn.execute(sql, tuple(params)).fetchall()
     out: list[dict[str, Any]] = []
     for r in rows:
         d = dict(r)
         d["action"] = json.loads(d.pop("action_json"))
         out.append(d)
     return out
+
+
+def upsert_policy(
+    conn: sqlite3.Connection,
+    *,
+    policy_id: str,
+    tenant_id: str,
+    name: str,
+    rules: list[dict[str, Any]],
+    enabled: bool = True,
+) -> None:
+    now = _now()
+    conn.execute(
+        """
+        INSERT INTO policies (policy_id, tenant_id, name, rules_json, enabled, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(policy_id) DO UPDATE SET
+            tenant_id  = excluded.tenant_id,
+            name       = excluded.name,
+            rules_json = excluded.rules_json,
+            enabled    = excluded.enabled,
+            updated_at = excluded.updated_at
+        """,
+        (policy_id, tenant_id, name, json.dumps(rules), 1 if enabled else 0, now, now),
+    )
+    conn.commit()
+
+
+def list_policies(
+    conn: sqlite3.Connection, tenant_id: str | None = None, enabled_only: bool = False
+) -> list[dict[str, Any]]:
+    sql = "SELECT policy_id, tenant_id, name, rules_json, enabled, created_at, updated_at FROM policies"
+    where: list[str] = []
+    params: list[Any] = []
+    if tenant_id is not None:
+        where.append("tenant_id = ?")
+        params.append(tenant_id)
+    if enabled_only:
+        where.append("enabled = 1")
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY updated_at DESC"
+    rows = conn.execute(sql, tuple(params)).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        d["rules"] = json.loads(d.pop("rules_json"))
+        d["enabled"] = bool(d["enabled"])
+        out.append(d)
+    return out
+
+
+def delete_policy(conn: sqlite3.Connection, policy_id: str) -> bool:
+    cur = conn.execute("DELETE FROM policies WHERE policy_id = ?", (policy_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def store_kem_keypair(
+    conn: sqlite3.Connection,
+    *,
+    kem_id: str,
+    tenant_id: str,
+    algorithm: str,
+    public_key: bytes,
+    secret_key: bytes,
+) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO kem_keys (kem_id, tenant_id, algorithm, public_key, secret_key, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (kem_id, tenant_id, algorithm, public_key, secret_key, _now()),
+    )
+    conn.commit()
+
+
+def get_kem_keypair(conn: sqlite3.Connection, kem_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT kem_id, tenant_id, algorithm, public_key, secret_key, created_at "
+        "FROM kem_keys WHERE kem_id = ?",
+        (kem_id,),
+    ).fetchone()
+    return dict(row) if row else None
