@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 
+import httpx
+
 from .client import DEFAULT_VERIFIER, audit, get_agent, get_envelope, register, revoke, submit, verify
 from .envelope import Envelope
 from .identity import Identity
@@ -129,6 +131,39 @@ def cmd_envelope(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_anomaly_score(args: argparse.Namespace) -> int:
+    payload = json.loads(Path(args.envelope).read_text())
+    r = httpx.post(f"{args.verifier}/v1/anomaly/score", json=payload)
+    r.raise_for_status()
+    print(json.dumps(r.json(), indent=2))
+    return 0
+
+
+def cmd_proof(args: argparse.Namespace) -> int:
+    r = httpx.get(f"{args.verifier}/v1/envelopes/{args.envelope_id}/proof")
+    r.raise_for_status()
+    print(json.dumps(r.json(), indent=2))
+    return 0
+
+
+def cmd_policy_add(args: argparse.Namespace) -> int:
+    rules = json.loads(Path(args.rules).read_text())
+    r = httpx.post(
+        f"{args.verifier}/v1/policies",
+        json={"name": args.name, "rules": rules, "enabled": True},
+    )
+    r.raise_for_status()
+    print(json.dumps(r.json(), indent=2))
+    return 0
+
+
+def cmd_policy_list(args: argparse.Namespace) -> int:
+    r = httpx.get(f"{args.verifier}/v1/policies")
+    r.raise_for_status()
+    print(json.dumps(r.json(), indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="signet", description="Signet CLI")
     p.add_argument("--verifier", default=DEFAULT_VERIFIER, help="Verifier base URL")
@@ -176,6 +211,25 @@ def build_parser() -> argparse.ArgumentParser:
     pe = sub.add_parser("envelope", help="Fetch envelope by id")
     pe.add_argument("envelope_id")
     pe.set_defaults(func=cmd_envelope)
+
+    pan = sub.add_parser("anomaly", help="Anomaly subcommands")
+    an_sub = pan.add_subparsers(dest="anomaly_cmd", required=True)
+    an_score = an_sub.add_parser("score", help="Score an envelope file")
+    an_score.add_argument("--envelope", required=True)
+    an_score.set_defaults(func=cmd_anomaly_score)
+
+    pp = sub.add_parser("proof", help="Fetch Merkle inclusion proof for an envelope")
+    pp.add_argument("envelope_id")
+    pp.set_defaults(func=cmd_proof)
+
+    ppol = sub.add_parser("policy", help="Policy subcommands")
+    pol_sub = ppol.add_subparsers(dest="policy_cmd", required=True)
+    pol_add = pol_sub.add_parser("add", help="Create a policy from a rules JSON file")
+    pol_add.add_argument("--name", required=True)
+    pol_add.add_argument("--rules", required=True, help="Path to rules JSON array")
+    pol_add.set_defaults(func=cmd_policy_add)
+    pol_list = pol_sub.add_parser("list", help="List policies")
+    pol_list.set_defaults(func=cmd_policy_list)
 
     return p
 

@@ -57,12 +57,24 @@ class Identity:
         )
 
     def sign(self, message: bytes) -> bytes:
-        with oqs.Signature(self._oqs_name, self._secret_key) as signer:
-            return bytes(signer.sign(message))
+        signer = getattr(self, "_external_signer", None)
+        if signer is not None:
+            return signer.sign(message)
+        with oqs.Signature(self._oqs_name, self._secret_key) as ctx:
+            return bytes(ctx.sign(message))
 
     def sign_classical(self, message: bytes) -> bytes:
         sk = Ed25519PrivateKey.from_private_bytes(self._ed25519_secret)
         return sk.sign(message)
+
+    def with_signer(self, signer) -> "Identity":
+        """Bind an external HSM/PKCS11 signer to this identity for the
+        post-quantum half. Public key must match the externally-held key.
+        """
+        from dataclasses import replace as _replace
+        clone = _replace(self, public_key=signer.public_key, algorithm=signer.algorithm)
+        object.__setattr__(clone, "_external_signer", signer)
+        return clone
 
 
 def verify_signature(
