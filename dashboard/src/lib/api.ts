@@ -119,3 +119,30 @@ export async function fetchInclusionProof(
   if (!r.ok) throw new Error(`proof HTTP ${r.status}`);
   return r.json();
 }
+
+export type LLMFireResult = {
+  envelope_id: string;
+  agent_id: string;
+  provider: string;
+  action: { name?: string; params?: Record<string, unknown>; planner?: string };
+  verdict: {
+    valid: boolean;
+    reason: string | null;
+    anomaly_score: number | null;
+  };
+};
+
+export async function fireLLMAction(prompt: string): Promise<LLMFireResult> {
+  const r = await fetch(`${VERIFIER_HTTP}/v1/demo/llm-fire`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ prompt }),
+  });
+  if (!r.ok) {
+    const txt = await r.text();
+    throw new Error(`llm-fire HTTP ${r.status}: ${txt}`);
+  }
+  return r.json();
+}
+
+export const FIRMWARE_PATH = process.env.NEXT_PUBLIC_FIRMWARE_PATH ?? "";

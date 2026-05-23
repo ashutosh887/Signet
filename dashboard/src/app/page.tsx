@@ -6,13 +6,16 @@ import {
   Agent,
   AnomalyReport,
   Envelope,
+  FIRMWARE_PATH,
   InclusionProof,
+  LLMFireResult,
   StreamEvent,
   VERIFIER_WS,
   fetchAgents,
   fetchAnomalyReport,
   fetchAudit,
   fetchInclusionProof,
+  fireLLMAction,
   getApiKey,
   revokeAgent,
   setApiKey,
@@ -98,6 +101,12 @@ export default function Dashboard() {
   const [proof, setProof] = useState<InclusionProof | null>(null);
   const [proofError, setProofError] = useState<string | null>(null);
   const [apiKey, setApiKeyState] = useState<string>("");
+  const [firePrompt, setFirePrompt] = useState<string>(
+    "Schedule a 30-minute meeting with Akash on Monday at 4pm",
+  );
+  const [fireBusy, setFireBusy] = useState(false);
+  const [fireResult, setFireResult] = useState<LLMFireResult | null>(null);
+  const [fireError, setFireError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -196,6 +205,21 @@ export default function Dashboard() {
       lastSeen: v.lastSeen,
     }));
   }, [stream]);
+
+  const onFire = async () => {
+    if (!firePrompt.trim() || fireBusy) return;
+    setFireBusy(true);
+    setFireError(null);
+    setFireResult(null);
+    try {
+      const res = await fireLLMAction(firePrompt.trim());
+      setFireResult(res);
+    } catch (e) {
+      setFireError((e as Error).message);
+    } finally {
+      setFireBusy(false);
+    }
+  };
 
   const onRevoke = async (id: string) => {
     if (typeof window !== "undefined" && !window.confirm(`Revoke ${id}? This is a one-click kill for the agent.`))
@@ -326,7 +350,47 @@ export default function Dashboard() {
         />
       </section>
 
-      {/* MAIN */}
+      <Card className="px-5 py-4 flex flex-col gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <div className="text-sm font-semibold text-neutral-100">
+              Live LLM action
+            </div>
+            <p className="text-[12px] text-neutral-500 leading-relaxed max-w-2xl">
+              Hit the button — the verifier asks a real LLM to plan a tool call,
+              signs the result with ML-DSA-44, and submits the envelope. It
+              appears in the stream below within a second.
+            </p>
+          </div>
+          {fireResult && (
+            <Badge tone={fireResult.verdict.valid ? "ok" : "bad"}>
+              {fireResult.verdict.valid ? "verified" : "denied"} ·{" "}
+              {fireResult.action?.name ?? "—"} · {fireResult.provider}
+            </Badge>
+          )}
+        </div>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            type="text"
+            value={firePrompt}
+            onChange={(e) => setFirePrompt(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") onFire();
+            }}
+            placeholder="What should the agent do?"
+            className="flex-1 bg-neutral-900/60 border border-neutral-800 rounded-md px-3 py-2 text-[13px] text-neutral-100 placeholder:text-neutral-600 focus:outline-none focus:border-neutral-700"
+          />
+          <Button onClick={onFire} disabled={fireBusy || !firePrompt.trim()}>
+            {fireBusy ? "Planning…" : "Fire LLM action"}
+          </Button>
+        </div>
+        {fireError && (
+          <div className="text-rose-400 text-[12px] break-words">
+            {fireError}
+          </div>
+        )}
+      </Card>
+
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         {/* LEFT */}
         <div className="lg:col-span-5 flex flex-col gap-5">
@@ -734,6 +798,15 @@ export default function Dashboard() {
           >
             Merkle root
           </a>
+          {FIRMWARE_PATH && (
+            <a
+              className="hover:text-neutral-300"
+              href={`vscode://file/${FIRMWARE_PATH}`}
+              title="Open the ESP32 firmware in VS Code / PlatformIO"
+            >
+              Open firmware in VS Code
+            </a>
+          )}
         </span>
       </footer>
     </main>
