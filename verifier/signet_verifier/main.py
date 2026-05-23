@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 
 import oqs
 
-from . import db, kem as kem_mod, merkle, policy, webhooks as webhooks_mod
+from . import db, kem as kem_mod, merkle, policy, smt, webhooks as webhooks_mod
 from .anomaly import AnomalyDetector, build_training_set
 from .stream import StreamHub
 
@@ -581,6 +581,32 @@ def audit_root() -> dict[str, Any]:
     }
 
 
+def _revoked_agent_ids(conn) -> list[str]:
+    rows = conn.execute(
+        "SELECT agent_id FROM agents WHERE revoked_at IS NOT NULL ORDER BY agent_id"
+    ).fetchall()
+    return [r["agent_id"] for r in rows]
+
+
+@app.get("/v1/revocations/root")
+def revocations_root() -> dict[str, Any]:
+    ids = _revoked_agent_ids(app.state.db)
+    return {
+        "algorithm": "sha3-256",
+        "depth": smt.DEPTH,
+        "size": len(ids),
+        "root": smt.compute_root(ids),
+    }
+
+
+@app.get("/v1/agents/{agent_id}/revocation-proof")
+def agent_revocation_proof(agent_id: str) -> dict[str, Any]:
+    ids = _revoked_agent_ids(app.state.db)
+    p = smt.proof(ids, agent_id)
+    p["root"] = smt.compute_root(ids)
+    return p
+
+
 class WebhookCreate(BaseModel):
     url: str
     events: list[str] = Field(default_factory=lambda: ["*"])
@@ -698,6 +724,65 @@ def evaluate_policy(payload: PolicyEvalRequest, request: Request) -> dict[str, A
         "allowed": decision.allowed,
         "rule_id": decision.rule_id,
         "reason": decision.reason,
+    }
+
+
+class RootAttestation(BaseModel):
+    payload: dict[str, Any]
+    root_algorithm: str
+    root_public_key_b64: str
+    signature_b64: str
+
+
+@app.post("/v1/identities/attested")
+def register_attested_identity(att: RootAttestation, request: Request) -> dict[str, str]:
+    """Register an agent identity gated on an SLH-DSA root signature."""
+    try:
+        import json as _json
+        canonical = _json.dumps(att.payload, sort_keys=True, separators=(",", ":")).encode()
+        sig = base64.b64decode(att.signature_b64)
+        root_pk = base64.b64decode(att.root_public_key_b64)
+    except Exception as exc:
+        raise HTTPException(400, f"bad attestation: {exc}")
+
+    enabled = set(oqs.get_enabled_sig_mechanisms())
+    root_name = None
+    for cand in ("SLH-DSA-SHA2-128s", "SPHINCS+-SHA2-128s-simple"):
+        if cand in enabled:
+            root_name = cand
+            break
+    if root_name is None:
+        raise HTTPException(501, "verifier liboqs build lacks SLH-DSA/SPHINCS+")
+    with oqs.Signature(root_name) as v:
+        if not v.verify(canonical, sig, root_pk):
+            raise HTTPException(400, "bad_root_signature")
+
+    payload = att.payload
+    try:
+        pk = base64.b64decode(payload["public_key_b64"])
+        hybrid_pk = (
+            base64.b64decode(payload["hybrid_public_key_b64"])
+            if payload.get("hybrid_public_key_b64") else None
+        )
+    except Exception as exc:
+        raise HTTPException(400, f"bad attested public_key: {exc}")
+    tenant_id = payload.get("tenant_id") or _tenant_of(request)
+    db.upsert_agent(
+        app.state.db,
+        agent_id=payload["agent_id"],
+        principal_id=payload["principal_id"],
+        algorithm=payload.get("algorithm", "ML-DSA-44"),
+        public_key=pk,
+        tenant_id=tenant_id,
+        hybrid_classical=payload.get("hybrid_classical"),
+        hybrid_public_key=hybrid_pk,
+    )
+    return {
+        "agent_id": payload["agent_id"],
+        "tenant_id": tenant_id,
+        "status": "registered",
+        "attested_by": payload.get("root_id", ""),
+        "root_algorithm": att.root_algorithm,
     }
 
 
