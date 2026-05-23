@@ -1,20 +1,5 @@
-"""Sparse Merkle Tree of revoked agent IDs (RFC-DRAFT §6 Phase 1).
-
-Keys are SHA3-256(agent_id) — 256-bit, treated as a path from root to leaf
-(MSB first). The tree is implicitly of depth 256 with every absent key
-hashing to a per-level empty hash.
-
-Proofs are 256 sibling hashes. Verifier reconstructs the root by climbing
-from leaf to root, using the supplied sibling at each level. A proof
-verifies that:
-  - leaf == H_leaf(present_marker)  → key IS revoked (inclusion)
-  - leaf == EMPTY_LEAF               → key is NOT revoked (non-membership)
-
-Both forms use the same proof structure; the leaf hash differs.
-
-Implementation note: we don't store the full 2^256 tree. We only store the
-set of present (revoked) keys, then compute the root and proofs lazily.
-"""
+"""Sparse Merkle Tree of revoked agent IDs. 256-deep; inclusion vs
+non-membership distinguished by leaf hash (PRESENT marker vs EMPTY_LEAF)."""
 from __future__ import annotations
 
 import hashlib
@@ -33,7 +18,6 @@ def _h(*parts: bytes) -> bytes:
 
 
 def key_path(agent_id: str) -> bytes:
-    """256-bit path derived from the agent_id (big-endian MSB-first traversal)."""
     return _h(b"signet-smt-key|", agent_id.encode())
 
 
@@ -43,7 +27,6 @@ def present_leaf() -> bytes:
 
 @lru_cache(maxsize=DEPTH + 1)
 def _empty_subtree_root(level: int) -> bytes:
-    """Root of an all-empty subtree of the given level. level=0 is a leaf."""
     if level == 0:
         return EMPTY_LEAF
     sub = _empty_subtree_root(level - 1)
@@ -56,15 +39,9 @@ def _bit(path: bytes, level_from_top: int) -> int:
 
 
 def _build(keys: list[bytes], level_from_top: int) -> bytes:
-    """Compute the subtree root over a sorted list of keys at this level.
-
-    Each key in `keys` is the full 256-bit path; at the current level we
-    split them by the next bit and recurse. Returns the subtree root.
-    """
     if not keys:
         return _empty_subtree_root(DEPTH - level_from_top)
     if level_from_top == DEPTH:
-        # We're at a leaf — at most one key terminates here.
         return present_leaf()
     left: list[bytes] = []
     right: list[bytes] = []
@@ -81,7 +58,6 @@ def _build(keys: list[bytes], level_from_top: int) -> bytes:
 
 
 def compute_root(revoked_agent_ids: list[str]) -> str:
-    """Root of the SMT containing exactly the given revoked agent IDs."""
     paths = sorted(key_path(a) for a in revoked_agent_ids)
     return _build(paths, 0).hex()
 

@@ -1,16 +1,5 @@
-"""SLH-DSA-128s long-lived root keys (FIPS 205).
-
-Root keys are the trust anchor that signs short-lived ML-DSA-44 agent
-identity attestations. SLH-DSA is hash-based (no lattice assumption), so
-even if ML-DSA were broken by an unforeseen cryptanalytic advance, root
-attestations remain verifiable.
-
-Signing is slow (~50-500 ms) and signatures are large (~7.8 KB for
-SHA2-128s). That's the right cost profile for a key used at registration
-time, not for every action envelope.
-
-liboqs 0.15 exposes SLH-DSA-128s under the historical SPHINCS+ name.
-"""
+"""SLH-DSA-128s (FIPS 205) long-lived root keys. Hash-based — survives an
+unforeseen lattice break that would compromise ML-DSA agent keys."""
 from __future__ import annotations
 
 import json
@@ -73,12 +62,6 @@ def attest_agent(
     ed25519_public_key: bytes | None = None,
     not_after_iso: str | None = None,
 ) -> dict:
-    """Produce a root-signed attestation binding an ML-DSA agent key to a principal.
-
-    The verifier re-canonicalises the same payload (sorted keys, compact
-    separators), verifies the SLH-DSA signature, and only then accepts the
-    registration.
-    """
     import base64
     payload = {
         "type": "signet/agent-attestation/v1",

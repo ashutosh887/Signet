@@ -1,12 +1,5 @@
-"""End-to-end demo: three legit agents stay green, a rogue agent goes red, revoke kills it.
-
-Requires the verifier running on localhost:8000.
-
-If OPENAI_API_KEY or GEMINI_API_KEY are set (via .env), the legit agents
-plan their actions through a real LLM instead of canned dicts. Set
-SIGNET_LLM_PROVIDER=openai|gemini to pick the provider (default: openai
-if key present, else gemini, else canned).
-"""
+"""3 legit agents stay green, rogue goes red, revoke kills it.
+If OPENAI_API_KEY/GEMINI_API_KEY are present, legit agents plan via LLM."""
 from __future__ import annotations
 
 import os

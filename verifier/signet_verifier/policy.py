@@ -52,15 +52,6 @@ def _rule_matches(rule: dict[str, Any], context: dict[str, Any]) -> bool:
 
 
 def evaluate(rules: list[dict[str, Any]], context: dict[str, Any]) -> PolicyDecision:
-    """First-match-wins evaluation.
-
-    Each rule shape:
-        {"id": "...", "effect": "allow"|"deny",
-         "match": {"action_name": "...", "params": {...}, ...},
-         "reason": "..."}
-    A rule with no match block matches anything (use as final allow/deny).
-    Default if no rule matches: allow.
-    """
     for rule in rules:
         if not rule.get("enabled", True):
             continue

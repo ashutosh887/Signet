@@ -1,12 +1,5 @@
-"""Voice-trigger demo: audio file → ElevenLabs Scribe (STT) → LLM agent → Signet envelope.
-
-Backs the ESP32-C3 voice trigger step of the PRD §14 demo when you don't
-have hardware on stage. Point it at any WAV/MP3 and it transcribes,
-plans, signs, submits.
-
-Usage:
-    python scripts/voice_demo.py --audio sample.wav --provider openai
-"""
+"""Voice → ElevenLabs Scribe → LLM agent → signed Signet envelope.
+Stands in for the ESP32-C3 trigger when no hardware is on stage."""
 from __future__ import annotations
 
 import argparse

@@ -1,12 +1,5 @@
-"""Seed a running verifier with a tenant, a policy, and a small envelope history
-so the dashboard is alive on first load.
-
-Usage:
-    python scripts/demo_seed.py [--verifier http://localhost:8000]
-
-Idempotent enough for repeated runs: re-running creates fresh agents and policies
-but old ones stay in the DB. The dashboard shows whatever's there.
-"""
+"""Seed a running verifier with a tenant, policy, and envelope history so
+the dashboard isn't empty on cold start."""
 from __future__ import annotations
 
 import argparse

@@ -736,7 +736,6 @@ class RootAttestation(BaseModel):
 
 @app.post("/v1/identities/attested")
 def register_attested_identity(att: RootAttestation, request: Request) -> dict[str, str]:
-    """Register an agent identity gated on an SLH-DSA root signature."""
     try:
         import json as _json
         canonical = _json.dumps(att.payload, sort_keys=True, separators=(",", ":")).encode()

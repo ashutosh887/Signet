@@ -11,19 +11,6 @@ ToolHandler = Callable[[str, dict[str, Any]], Any] | Callable[[str, dict[str, An
 
 
 class SignetMCPMiddleware:
-    """Wraps an MCP-style tool invocation in a Signet action envelope.
-
-    Drop into any host that dispatches `(tool_name, params) -> result`:
-
-        mcp = SignetMCPMiddleware(identity)
-        result = mcp.invoke("book_meeting", {"date": "2026-05-24"}, handler=run_tool)
-
-    A2A (agent-to-agent) callers use the same interface — the envelope
-    captures `principal_id`, action name + params, and is verified before
-    the host actually runs the tool. Result of the underlying call is
-    returned to the caller unmodified; the verdict is attached.
-    """
-
     def __init__(
         self,
         identity: Identity,

@@ -38,21 +38,13 @@ class SoftwareClassicalSigner:
 
 
 class PKCS11Signer:
-    """Stub for production HSMs (YubiHSM, AWS CloudHSM, Thales).
-
-    The interface is intentionally identical to SoftwareSigner so the SDK
-    can route signing to a real HSM without changing call sites. Wiring a
-    concrete python-pkcs11 session is a deployment concern, not an SDK
-    concern.
-    """
-
     def __init__(self, *, slot: int, label: str, algorithm: str = "ML-DSA-44") -> None:
         self.slot = slot
         self.label = label
         self.algorithm = algorithm
         self.public_key = b""
 
-    def sign(self, message: bytes) -> bytes:  # pragma: no cover - deployment
+    def sign(self, message: bytes) -> bytes:
         raise NotImplementedError(
             "PKCS11Signer is a deployment-time stub. Bind to python-pkcs11 "
             "or your HSM vendor's library to enable hardware signing."

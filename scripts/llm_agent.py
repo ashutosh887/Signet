@@ -1,14 +1,5 @@
-"""Live LLM agent: ask OpenAI or Gemini to plan a tool call, sign it as a
-Signet envelope, submit to the verifier.
-
-This is what makes the demo feel real to judges — the action being signed is
-genuinely produced by a frontier model, not a canned dict. Keys come from
-environment (.env at repo root); missing keys produce a clear error.
-
-Usage:
-    python scripts/llm_agent.py --provider openai --query "schedule a coffee with Akash"
-    python scripts/llm_agent.py --provider gemini --query "summarise today's standup notes"
-"""
+"""LLM agent: ask OpenAI or Gemini to plan a tool call, sign as a Signet
+envelope, submit. Keys loaded from .env."""
 from __future__ import annotations
 
 import argparse
@@ -66,11 +57,9 @@ SYSTEM_PROMPT = (
 def _extract_json(text: str) -> dict[str, Any]:
     text = text.strip()
     if text.startswith("```"):
-        # strip markdown code fences if the model ignored the instruction
         text = text.strip("`")
         if text.lower().startswith("json"):
             text = text[4:].lstrip()
-    # find first { ... } balanced span
     depth = 0
     start = -1
     for i, ch in enumerate(text):

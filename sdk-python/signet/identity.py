@@ -68,9 +68,6 @@ class Identity:
         return sk.sign(message)
 
     def with_signer(self, signer) -> "Identity":
-        """Bind an external HSM/PKCS11 signer to this identity for the
-        post-quantum half. Public key must match the externally-held key.
-        """
         from dataclasses import replace as _replace
         clone = _replace(self, public_key=signer.public_key, algorithm=signer.algorithm)
         object.__setattr__(clone, "_external_signer", signer)

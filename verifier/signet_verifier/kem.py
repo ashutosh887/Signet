@@ -53,7 +53,7 @@ def generate() -> KemKeypair:
 
 
 def encapsulate(pq_public: bytes, classical_public: bytes) -> tuple[bytes, bytes, bytes]:
-    """Returns (pq_ciphertext, classical_ephemeral_public, shared_secret)."""
+    # returns (pq_ciphertext, classical_ephemeral_public, shared_secret)
     name = _resolve_kem(PQ_ALGORITHM)
     with oqs.KeyEncapsulation(name) as kem:
         pq_ct, pq_ss = kem.encap_secret(pq_public)
