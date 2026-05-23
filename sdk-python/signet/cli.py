@@ -164,6 +164,59 @@ def cmd_policy_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_root_keygen(args: argparse.Namespace) -> int:
+    from .root import RootIdentity
+    root = RootIdentity.generate(label=args.label)
+    data = {
+        "root_id": root.root_id,
+        "label": root.label,
+        "algorithm": root.algorithm,
+        "oqs_name": root._oqs_name,
+        "public_key_b64": base64.b64encode(root.public_key).decode(),
+        "secret_key_b64": base64.b64encode(root._secret_key).decode(),
+    }
+    Path(args.out).write_text(json.dumps(data, indent=2))
+    print(json.dumps({k: v for k, v in data.items() if k != "secret_key_b64"}, indent=2))
+    return 0
+
+
+def cmd_root_attest(args: argparse.Namespace) -> int:
+    from .root import RootIdentity, attest_agent
+    root_data = json.loads(Path(args.root).read_text())
+    root = RootIdentity(
+        root_id=root_data["root_id"], label=root_data["label"],
+        algorithm=root_data["algorithm"],
+        public_key=base64.b64decode(root_data["public_key_b64"]),
+        _secret_key=base64.b64decode(root_data["secret_key_b64"]),
+        _oqs_name=root_data["oqs_name"],
+    )
+    agent = _load_identity(Path(args.key))
+    attestation = attest_agent(
+        root,
+        agent_id=agent.agent_id,
+        principal_id=agent.principal_id,
+        ml_dsa_public_key=agent.public_key,
+        ed25519_public_key=agent.ed25519_public,
+        not_after_iso=args.not_after,
+    )
+    if args.register:
+        r = httpx.post(f"{args.verifier}/v1/identities/attested", json=attestation)
+        r.raise_for_status()
+        print(json.dumps(r.json(), indent=2))
+    else:
+        print(json.dumps(attestation, indent=2))
+    return 0
+
+
+def cmd_revocation_proof(args: argparse.Namespace) -> int:
+    r = httpx.get(f"{args.verifier}/v1/agents/{args.agent_id}/revocation-proof")
+    r.raise_for_status()
+    p = r.json()
+    print(json.dumps({k: v for k, v in p.items() if k != "siblings_hex"}, indent=2))
+    print(f"siblings_hex: <{len(p['siblings_hex'])} hashes elided>")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="signet", description="Signet CLI")
     p.add_argument("--verifier", default=DEFAULT_VERIFIER, help="Verifier base URL")
@@ -230,6 +283,24 @@ def build_parser() -> argparse.ArgumentParser:
     pol_add.set_defaults(func=cmd_policy_add)
     pol_list = pol_sub.add_parser("list", help="List policies")
     pol_list.set_defaults(func=cmd_policy_list)
+
+    proot = sub.add_parser("root", help="SLH-DSA-128s root key operations")
+    root_sub = proot.add_subparsers(dest="root_cmd", required=True)
+    rkg = root_sub.add_parser("keygen", help="Generate an SLH-DSA-128s root key")
+    rkg.add_argument("--label", default="root")
+    rkg.add_argument("--out", required=True)
+    rkg.set_defaults(func=cmd_root_keygen)
+    rat = root_sub.add_parser("attest", help="Sign an agent key attestation")
+    rat.add_argument("--root", required=True, help="Root keyfile from keygen")
+    rat.add_argument("--key", required=True, help="Agent identity keyfile")
+    rat.add_argument("--not-after", default=None)
+    rat.add_argument("--register", action="store_true",
+                     help="POST to verifier's /v1/identities/attested")
+    rat.set_defaults(func=cmd_root_attest)
+
+    prp = sub.add_parser("revocation-proof", help="Fetch SMT revocation proof for an agent")
+    prp.add_argument("agent_id")
+    prp.set_defaults(func=cmd_revocation_proof)
 
     return p
 
