@@ -36,6 +36,8 @@ documents the **Phase 0** hackathon deliverable.
 - [HSM signer abstraction](#hsm-signer-abstraction)
 - [SLH-DSA root keys](#slh-dsa-root-keys)
 - [Sparse Merkle Tree revocation](#sparse-merkle-tree-revocation)
+- [Live LLM agents](#live-llm-agents)
+- [Voice trigger demo](#voice-trigger-demo)
 - [Webhooks](#webhooks)
 - [Merkle audit log](#merkle-audit-log)
 - [Observability](#observability)
@@ -679,6 +681,56 @@ with `signet_verifier.smt.verify_proof()`.
 Federated verifiers can pull `/v1/revocations/root` cheaply and exchange
 proofs to converge on revocation state without trusting each other's
 databases.
+
+---
+
+## Live LLM agents
+
+The demo agents can plan actions through real frontier models. Put your
+keys in `.env` at repo root (see `.env.example`); the demo scripts read
+them automatically.
+
+```bash
+# .env at repo root (gitignored)
+OPENAI_API_KEY=sk-proj-...
+GEMINI_API_KEY=AIza...
+ELEVENLABS_API_KEY=sk_...
+```
+
+Then:
+
+```bash
+python scripts/llm_agent.py --provider openai \
+  --query "Schedule a 30-minute meeting with Akash on Monday at 4pm"
+
+python scripts/llm_agent.py --provider gemini \
+  --query "Summarise the Q2 OKR doc in two sentences"
+```
+
+`llm_agent.py` asks the model to emit a single JSON tool call, wraps it in
+an ML-DSA-44 signed envelope, registers the agent, and submits — end-to-end
+in ~2–3 seconds. `demo_rogue.py` auto-detects the keys and switches the
+three legit agents to live LLM planning (set `SIGNET_LLM_PROVIDER` to pin
+one).
+
+---
+
+## Voice trigger demo
+
+`scripts/voice_demo.py` covers the ESP32-C3 step of the PRD §14 demo path
+without hardware — point it at any audio file, get a signed envelope:
+
+```bash
+# generate a quick clip on macOS (or use any wav/mp3 you have)
+say -o /tmp/cmd.aiff "Schedule a meeting with Akash for Monday at 4 PM"
+afconvert -f WAVE -d LEI16 /tmp/cmd.aiff /tmp/cmd.wav
+
+python scripts/voice_demo.py --audio /tmp/cmd.wav --provider openai
+```
+
+Pipeline: ElevenLabs Scribe STT → OpenAI/Gemini plan → ML-DSA-44 sign →
+verifier verdict. The transcript is preserved in `action.voice_transcript`
+so the dashboard shows what was said.
 
 ---
 
