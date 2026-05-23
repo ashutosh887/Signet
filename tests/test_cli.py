@@ -1,4 +1,4 @@
-"""Argparse-level CLI smoke tests — verifies the subcommand surface promised in PRD §10.3."""
+"""Argparse-level CLI smoke tests — verifies the documented subcommand surface."""
 from signet.cli import build_parser
 
 

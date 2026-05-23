@@ -1,8 +1,7 @@
 # Q&A Defense Notebook
 
 Twelve prepared questions for Phase 2 judging. Memorize the answers and
-deliver them in two to three sentences. References to PRD sections in
-parentheses.
+deliver them in two to three sentences.
 
 ---
 
@@ -15,15 +14,14 @@ customers live in their first month. At 100K samples per agent we would
 switch to classical online learning, and the verifier already trains both
 models side-by-side and serves whichever wins on a held-out validation
 split. We claim *cold-start advantage*, not asymptotic advantage, and the
-benchmark is reproducible in `docs/benchmark/`. (PRD §13.3)
-
+benchmark is reproducible in `docs/benchmark/`.
 ### Q2. ML-DSA-44 signatures are 2420 bytes versus 64 bytes for ECDSA. 38× overhead. How does this scale?
 
 Hybrid Ed25519 + ML-DSA-44 during the 2027–2033 migration window per CNSA
 2.0; ML-DSA-44 only by 2030. Verify is roughly 4× faster than RSA-2048, so
 server-side throughput improves. Bandwidth cost is real and is the right
 cost — RSA-signed JWTs today are a 2030 ticking time bomb. We measure 187
-bytes/sec idle overhead per agent and 3.2 KB/sec under load. (PRD §13.1)
+bytes/sec idle overhead per agent and 3.2 KB/sec under load.
 
 ### Q3. Why should anyone trust this for production today?
 
@@ -32,7 +30,7 @@ open the spec as an IETF Internet-Draft, ship a Phase 1 alpha SDK for
 design partners, third-party audit cryptographic primitives by Trail of
 Bits or NCC Group, then production. The anomaly detector specifically needs
 six months of real agent telemetry before we would trust it on critical
-actions. (PRD §22 success metrics, §21 risks)
+actions.
 
 ### Q4. Why ML-DSA-44 specifically and not Falcon or SLH-DSA?
 
@@ -41,8 +39,7 @@ signing-throughput / signature-size / standardization-maturity tradeoff for
 high-frequency operations. Falcon has constant-time implementation pitfalls
 and is not fully standardized. SLH-DSA is hash-based — we use it for root
 keys and long-lived identities (Phase 1) where signing is infrequent, not
-for per-action signing. The per-key-class algorithm choice is documented in
-PRD §8.2.
+for per-action signing.
 
 ### Q5. What is the latency overhead of wrapping an LLM agent with Signet?
 
@@ -58,7 +55,7 @@ MCP defines transport — Signet defines identity. MCP today uses OAuth 2.0
 bearer tokens or shared secrets, which are RSA / HMAC-based and not
 post-quantum-safe. Signet is complementary: we will ship an MCP middleware
 in Phase 2 that adds Signet identity to MCP transport. We propose it as an
-extension to the MCP spec — `Authorization-Signet` header. (PRD §9.3)
+extension to the MCP spec — `Authorization-Signet` header.
 
 ### Q7. What stops someone from just running an unwrapped agent?
 
@@ -67,7 +64,7 @@ care about audit trail, regulatory compliance, post-quantum future-proofing,
 or behaviour anomaly detection, you wrap your agent. If you do not, you do
 not. The customer is the platform team building an agent product, not the
 end user. Same model as Stripe — nothing stops you from rolling your own
-payments, you just should not. (PRD §6 personas)
+payments, you just should not.
 
 ### Q8. How does the verifier scale? What is your throughput?
 
@@ -83,9 +80,9 @@ production. Full load test is a Phase 1 deliverable.
 Total static allocation for the firmware including TLS, I²S, Wi-Fi, and
 signing: 187 KB on the dev build. ML-DSA-44 signing transient peak adds
 35 KB. So ~220 KB used, 180 KB headroom — tight but viable. The current
-Phase 0 build ships the gateway-side signing path (PRD §15 Plan B), which
-drops the device-side peak to 12 KB; on-device signing via pqm4 RISC-V is
-the Phase 1 upgrade. The cryptography is identical in both paths.
+Phase 0 build ships the gateway-side signing path, which drops the
+device-side peak to 12 KB; on-device signing via pqm4 RISC-V is the
+Phase 2 upgrade. The cryptography is identical in both paths.
 
 ### Q10. Quantum kernel SVMs do not actually need a quantum computer — you simulate them. So what is quantum about this?
 
@@ -99,15 +96,14 @@ quantum-circuit-defined kernel run classically; tomorrow it is run on a
 QPU. We bridge the gap with PennyLane's hardware-agnostic interface. The
 other two quantum components — ML-DSA and ML-KEM — are real classical
 algorithms designed to resist quantum attacks; they do not need a QPU at
-all. (PRD §13.3)
-
+all.
 ### Q11. What is the business model? How do you make money?
 
 Three-tier: free tier for indie devs (10K verifies/month), team tier
 ($99/mo, 1M verifies), enterprise tier (custom, includes HSM, SSO, SLA,
 on-prem). Add-ons: compliance reports, extended audit retention. Same
 shape as Auth0's pricing. Total addressable market is approximately $600M
-ARR by 2028 (PRD §4, §19).
+ARR by 2028.
 
 ### Q12. Why would Anthropic or OpenAI use a third-party for this instead of building it themselves?
 

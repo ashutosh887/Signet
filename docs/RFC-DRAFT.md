@@ -3,7 +3,7 @@
 **Working name:** *Post-Quantum Identity for Autonomous Agents*
 
 **Status:** Internet-Draft outline. Target submission: IETF 121 (Nov 2026) or
-IETF 122 (Mar 2027) per PRD §9.5.
+IETF 122 (Mar 2027).
 
 **Stream:** IETF PQUIP WG (Post-Quantum Use in Protocols).
 
@@ -175,7 +175,7 @@ conforming verifiers to implement it.
 
 ## 9. Security Considerations
 
-- HNDL is the motivating threat (§3 PRD).
+- Harvest-Now-Decrypt-Later (HNDL) is the motivating threat.
 - All long-lived (>1 year) keys SHOULD be SLH-DSA, not ML-DSA, due to the
   defense-in-depth argument against an unforeseen lattice break.
 - Verifiers MUST maintain a replay cache covering at least `expires_at -
@@ -232,7 +232,7 @@ and the open-quantum-safe project for `liboqs`.
 
 ## Appendix A. Sample envelope
 
-See `docs/PRD.md` §8.3.
+See the action-envelope schema block in `README.md` and §4 above.
 
 ## Appendix B. Implementation status
 

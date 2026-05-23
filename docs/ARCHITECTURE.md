@@ -123,5 +123,5 @@ flowchart TB
   to the **edge gateway** (`scripts/edge_gateway.py`).
 - The gateway holds the device's registered ML-DSA-44 identity. It signs the
   envelope on the device's behalf and submits it to the verifier.
-- On-device signing (pqm4 RISC-V port) is Phase 1; we documented but did not
-  attempt it in the hackathon window per PRD §15.
+- On-device signing (pqm4 RISC-V port) is Phase 2; documented but not
+  attempted in the hackathon window.

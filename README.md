@@ -12,8 +12,9 @@ cryptography. It gives every agent a verifiable identity, signs every action
 into a tamper-evident envelope, scores behavioural drift with a quantum-kernel
 anomaly detector, and propagates revocation across the fleet in under a second.
 
-The full product specification is in [`docs/PRD.md`](docs/PRD.md). This README
-documents the **Phase 0** hackathon deliverable.
+This README is the canonical source of truth for what's built. The pitch deck
+lives at [`docs/DECK.md`](docs/DECK.md); the system diagram at
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
@@ -159,24 +160,34 @@ JSON document signed with ML-DSA-44 (FIPS 204).
 - One-click revoke button
 - AUC scoreboard (quantum vs RBF, served model highlighted)
 
-### ESP32-C3 firmware (`firmware/`)
+### ESP32-S3 firmware (`firmware-arduino/`) — primary device
+
+- PlatformIO / Arduino project, target `esp32-s3-devkitc-1`
+- Boot button on GPIO0 → HTTPS POST to the edge gateway
+- LED feedback on GPIO48 (1 long blink = success, 4 short = failed POST)
+- Flash from VS Code with the PlatformIO extension installed
+- Edge gateway (`scripts/edge_gateway.py`) holds the device identity, signs
+  ML-DSA-44 envelopes, and forwards to the verifier
+
+### ESP32-C3 firmware (`firmware/`) — Plan B (voice path, ESP-IDF)
 
 - ESP-IDF 5.3+ CMake project, target `esp32-c3-devkitm-1`
 - I²S audio capture at 16 kHz mono (TRWS2014B mic)
 - Energy-threshold voice trigger (200 ms hold-down)
-- JSON payload + audio fingerprint POSTed to the edge gateway
-- Edge gateway (`scripts/edge_gateway.py`) holds the device identity, signs
-  ML-DSA-44 envelopes, and forwards to the verifier
-- Plan B path per PRD §15 — on-device pqm4 signing is the Phase 1 upgrade
-- `scripts/simulate_edge_device.py` reproduces the wire protocol without
-  hardware for offline demos
+- Same gateway path as the S3 board
 
 ### Demo tooling (`scripts/`)
 
-- `demo_rogue.py` — runs three legit agents and one rogue agent, demonstrates
-  flagging within 3 envelopes and revocation kill
-- `edge_gateway.py` — receives ESP32 fingerprints, signs envelopes
-- `simulate_edge_device.py` — replays the ESP32 protocol from a laptop
+- `demo_seed.py` — provisions tenant + policy + agents; **visible envelopes
+  planned by real Gemini/OpenAI** in parallel; falls back to canned if no
+  LLM key is set
+- `demo_rogue.py` — three legit agents, one rogue, flag-and-kill story
+- `llm_agent.py` — single LLM-planned action submission (OpenAI or Gemini)
+- `voice_demo.py` — Mac mic → ElevenLabs Scribe → LLM → signed envelope
+  (the hardware-fail fallback)
+- `edge_gateway.py` — receives device POSTs, signs envelopes, submits
+- `simulate_edge_device.py` — replays the device protocol from the laptop
+  for offline demos
 
 ---
 
@@ -239,10 +250,11 @@ signet/
 ├── verifier/                   FastAPI verifier service
 │   ├── pyproject.toml
 │   └── signet_verifier/
-│       ├── main.py             FastAPI app, endpoints, middleware, metrics
+│       ├── main.py             FastAPI app, endpoints, middleware, /v1/demo/llm-fire
 │       ├── db.py               SQLite schema + accessors + migrations (tenancy)
 │       ├── anomaly.py          PennyLane quantum kernel + RBF baseline + explain
 │       ├── merkle.py           SHA3-256 Merkle log + inclusion proofs
+│       ├── smt.py              Sparse Merkle Tree revocation registry
 │       ├── policy.py           Declarative policy evaluator (allow/deny rules)
 │       ├── kem.py              ML-KEM-768 + X25519 hybrid KEM
 │       ├── webhooks.py         Outbound HMAC-signed event dispatcher
@@ -254,13 +266,21 @@ signet/
 │       ├── components/         UI primitives
 │       └── lib/api.ts          Verifier REST + WebSocket client + proof fetch
 │
-├── firmware/                   ESP32-C3 edge agent (ESP-IDF)
+├── firmware-arduino/           ESP32-S3 boot-button firmware (PlatformIO)
+│   ├── platformio.ini
+│   ├── include/config.h.example
+│   └── src/main.cpp            WiFi + button press + POST to gateway
+│
+├── firmware/                   ESP32-C3 voice-trigger firmware (ESP-IDF, Plan B)
 │   ├── CMakeLists.txt
 │   ├── sdkconfig.defaults
 │   └── main/main.c             I²S capture + trigger + HTTP POST
 │
 ├── scripts/
+│   ├── demo_seed.py            Tenant + policy + agents (real-LLM visible traffic)
 │   ├── demo_rogue.py           Three legit + one rogue agent demo
+│   ├── llm_agent.py            Single LLM-planned signed action
+│   ├── voice_demo.py           Voice → STT → LLM → envelope (Mac fallback)
 │   ├── edge_gateway.py         Signs envelopes for ESP32 device
 │   └── simulate_edge_device.py Hardware-free ESP32 protocol replay
 │
@@ -271,16 +291,18 @@ signet/
 │   ├── test_ws_stream.py       WebSocket broadcast
 │   ├── test_policy.py          Policy engine evaluation rules
 │   ├── test_merkle.py          Merkle proof verification
+│   ├── test_smt.py             Sparse Merkle Tree inclusion/non-membership
 │   ├── test_kem.py             Hybrid KEM round-trip
+│   ├── test_root.py            SLH-DSA root keygen + attest + verify
 │   ├── test_tenancy.py         Multi-tenant DB isolation
 │   ├── test_webhook_hmac.py    Webhook HMAC signature + tenant filter
 │   └── test_cli.py             CLI subcommand surface
 │
 ├── docs/
-│   ├── PRD.md                  Full product spec (25 sections)
 │   ├── ARCHITECTURE.md         System diagram + data flow
-│   ├── QA.md                   12 prepared judge questions + answers
-│   ├── RFC-DRAFT.md            IETF Internet-Draft outline
+│   ├── DECK.md                 Pitch deck (Phase 1 PPT, bullets-only)
+│   ├── QA.md                   Twelve rehearsed judging questions
+│   ├── RFC-DRAFT.md            IETF PQUIP Internet-Draft outline
 │   └── benchmark/              Reproducible quantum vs RBF AUC benchmark
 │
 ├── .github/workflows/ci.yml    Build liboqs, install, SDK smoke + round-trip
@@ -717,8 +739,8 @@ one).
 
 ## Voice trigger demo
 
-`scripts/voice_demo.py` covers the ESP32-C3 step of the PRD §14 demo path
-without hardware — point it at any audio file, get a signed envelope:
+`scripts/voice_demo.py` covers the ESP32 step of the demo path without
+hardware — point it at any audio file, get a signed envelope:
 
 ```bash
 # generate a quick clip on macOS (or use any wav/mp3 you have)
@@ -785,7 +807,8 @@ see `verifier/signet_verifier/merkle.py::verify_proof`.
 ## Action envelope
 
 The atomic unit. Canonical JSON (sorted keys, no whitespace), ML-DSA-44
-signature over every field except `signature`. Full schema in PRD §8.3.
+signature over every field except `signature`. Full wire-format spec in
+[`docs/RFC-DRAFT.md`](docs/RFC-DRAFT.md).
 
 ```json
 {
@@ -919,11 +942,13 @@ TypeScript SDK tests run separately: `cd sdk-ts && pnpm test`.
 
 ## Documentation
 
-- [`docs/PRD.md`](docs/PRD.md) — full product requirements document (25 sections)
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system diagram and data flow
-- [`docs/QA.md`](docs/QA.md) — 12 prepared judge questions with answers
-- [`docs/RFC-DRAFT.md`](docs/RFC-DRAFT.md) — IETF Internet-Draft outline
-- [`firmware/README.md`](firmware/README.md) — ESP32-C3 firmware notes
+- [`docs/DECK.md`](docs/DECK.md) — pitch deck (Phase 1 PPT, bullets-only)
+- [`docs/QA.md`](docs/QA.md) — twelve rehearsed judging questions
+- [`docs/RFC-DRAFT.md`](docs/RFC-DRAFT.md) — IETF PQUIP Internet-Draft outline
+- [`docs/benchmark/`](docs/benchmark/) — reproducible quantum vs RBF benchmark
+- [`firmware-arduino/README.md`](firmware-arduino/README.md) — ESP32-S3 PlatformIO firmware (boot button)
+- [`firmware/README.md`](firmware/README.md) — ESP32-C3 ESP-IDF firmware (Plan B, voice trigger)
 - [`sdk-ts/README.md`](sdk-ts/README.md) — TypeScript SDK usage
 - [`CLAUDE.md`](CLAUDE.md) — codebase guide for AI assistants
 

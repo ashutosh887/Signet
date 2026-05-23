@@ -1,4 +1,4 @@
-"""Reproducible PRD §13.3 / §21 benchmark.
+"""Reproducible quantum-kernel vs classical anomaly-detection benchmark.
 
 Compares four classifiers on the same synthetic agent-behaviour dataset:
 
@@ -140,7 +140,7 @@ Synthetic agent-behaviour dataset, {args.seeds} seeds, n_legit={args.legit}, n_r
 | Linear SVM on PCA-6 (Schuld critique) | {l_m:.3f} ± {l_s:.3f} |
 | Isolation Forest (legit-only) | {i_m:.3f} ± {i_s:.3f} |
 
-**Honest reading (PRD §13.3):** on this synthetic data the cold-start
+**Honest reading:** on this synthetic data the cold-start
 regime shows the quantum kernel within noise of classical RBF. The verifier
 auto-serves whichever wins on the held-out validation split at boot. The
 linear-PCA baseline is included to answer the Schuld critique

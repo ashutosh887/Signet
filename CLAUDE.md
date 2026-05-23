@@ -4,9 +4,9 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 ## What this repo is
 
-Signet — a post-quantum cryptographic identity layer for AI agents. Pitch: *Auth0 for AI agents, born quantum-safe*. The PRD (`docs/PRD.md`) is the binding spec; when the PRD and conversation conflict, ask before deviating.
+Signet — a post-quantum cryptographic identity layer for AI agents. Pitch: *Auth0 for AI agents, born quantum-safe*. README.md is the canonical source of truth for what's built; `docs/DECK.md` is the pitch; `docs/ARCHITECTURE.md` is the system diagram; `docs/RFC-DRAFT.md` is the wire format spec.
 
-The hackathon shipped both Phase 0 and a slice of Phase 1+ work that the founder explicitly approved. The PRD's "non-goals for Phase 0" (multi-tenancy, HSM, TypeScript SDK, MCP/A2A integration, policy engine) are now built — they are no longer off-limits.
+The hackathon shipped Phase 0 plus the Phase 1+ extensions the founder approved: multi-tenancy, HSM signer abstraction, TypeScript SDK, MCP/A2A middleware, policy engine, hybrid KEM, SLH-DSA root keys, Sparse Merkle Tree revocation, HMAC webhooks.
 
 ## What's shipped (current ground truth)
 
@@ -47,7 +47,7 @@ Tenancy: every agent/envelope/webhook/policy/kem-key row carries `tenant_id`. Wh
 
 **Dashboard (`dashboard/`).** Next.js 16, Tailwind v4, dark mode default. Live envelope stream via WebSocket, agent registry with revoke button, anomaly heatmap, AUC report card, Merkle inclusion-proof modal triggered by clicking a stream row.
 
-**ESP32-C3 firmware (`firmware/`).** I²S audio trigger → gateway-side ML-DSA-44 signing (Plan B per PRD §15). On-device pqm4 port remains Phase 1+.
+**ESP32-S3 firmware (`firmware-arduino/`).** Primary device: PlatformIO/Arduino, BOOT-button trigger → gateway-side ML-DSA-44 signing. **ESP32-C3 firmware (`firmware/`).** Plan B: ESP-IDF, I²S voice trigger → gateway-side signing. On-device pqm4 port remains Phase 2.
 
 **Tests (`tests/`).** SDK round-trip, anomaly fit, `@wrap`/`delegate`, WebSocket broadcast, policy engine (5), Merkle proofs (4), KEM hybrid round-trip (2), CLI surface (4), tenancy isolation (4), webhook HMAC + tenant filter (3). All green.
 
@@ -55,13 +55,13 @@ Tenancy: every agent/envelope/webhook/policy/kem-key row carries `tenant_id`. Wh
 
 ## Architecture (three planes)
 
-The PRD describes one spine with three planes:
+One spine, three planes:
 
 - **Identity plane** — SDK + verifier + revocation registry + KEM. Cryptographic state.
 - **Behavior plane** — anomaly engine + policy engine. Semantic state.
 - **Observability plane** — dashboard + audit log + webhooks. What humans see.
 
-The atomic unit is the **action envelope** (PRD §8.3, RFC-DRAFT §4). JCS canonicalization over every field except `signature`. Hybrid signature when both keys are registered.
+The atomic unit is the **action envelope** (see `docs/RFC-DRAFT.md` §4 and the schema block in README.md). JCS canonicalization over every field except `signature`. Hybrid signature when both keys are registered.
 
 Monorepo layout: `/sdk-python`, `/sdk-ts`, `/verifier`, `/dashboard`, `/firmware`, `/scripts`, `/tests`, `/docs`.
 
@@ -77,7 +77,7 @@ If you reach for RSA, ECDSA, or plain SHA-256, stop. The entire point of Signet 
 
 ## Honest quantum claims (the line)
 
-PRD §13 and `docs/QA.md` are non-negotiable. Do not drift toward:
+`docs/QA.md` is non-negotiable. Do not drift toward:
 
 - Claiming asymptotic quantum advantage in anomaly detection. The claim is **cold-start advantage** (2–5% AUC over RBF on small per-tenant samples, per Havlíček 2019 / Liu-Arunachalam-Temme 2021 / Huang 2022). Switches to classical online learners at >100K samples per agent.
 - Claiming the quantum kernel needs a real QPU today. It's classically simulated on 6 qubits.
@@ -85,12 +85,12 @@ PRD §13 and `docs/QA.md` are non-negotiable. Do not drift toward:
 
 Reproducible benchmark in `docs/benchmark/`.
 
-## Demo script (PRD §14)
+## Demo script
 
 The 5-minute demo is the artifact. Optimize for this path:
 
-1. Three legit agents firing actions, all green.
-2. ESP32-C3 voice trigger → gateway signs → envelope on dashboard.
+1. Three legit agents firing actions planned by real OpenAI/Gemini, all green.
+2. **ESP32-S3 BOOT-button** (primary) → gateway signs → envelope on dashboard. If the device fails, fall back to `scripts/voice_demo.py` (Mac mic → ElevenLabs Scribe → LLM) or `scripts/simulate_edge_device.py` (hardware-free replay).
 3. Rogue agent toggled on — heatmap goes green→yellow→red in 3 envelopes / ~6 s.
 4. Click revoke. Rogue's next envelope rejected with `verdict: revoked`.
 5. Click any green envelope on the dashboard → Merkle inclusion proof modal.
@@ -121,11 +121,11 @@ pytest tests/ -v
 cd firmware && idf.py build flash monitor
 ```
 
-## Pre-flight checks (PRD §15)
+## Pre-flight checks
 
-Verify before Hour 0, in this order:
+Verify before any live demo, in this order:
 
 1. `liboqs-python` installs and ML-DSA-44 sign/verify works end-to-end.
-2. ESP32-C3 flashes with ESP-IDF; TRWS2014B mic captures 16 kHz I²S audio cleanly.
-3. `mupq/pqm4` Dilithium RISC-V port builds for `target=esp32c3`. If not, gateway-side signing is the documented Plan B — don't burn hours.
-4. PennyLane quantum kernel tutorial runs end-to-end on a toy dataset.
+2. ESP32-S3 flashes via PlatformIO; BOOT-button POSTs to the gateway and lands on the dashboard.
+3. Mac fallback: `scripts/voice_demo.py` and `scripts/simulate_edge_device.py` each produce a signed envelope without the device attached.
+4. PennyLane quantum kernel runs end-to-end on the synthetic dataset (skipped on `SIGNET_SKIP_TRAIN=1`).

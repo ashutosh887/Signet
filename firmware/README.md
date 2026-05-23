@@ -1,6 +1,8 @@
 # Signet ESP32-C3 Edge Firmware
 
-Reference firmware for the **edge agent** Phase 0 deliverable (PRD §8.6, §9.1).
+Reference firmware for the **edge agent** Plan-B path (voice trigger over I²S
+audio). The primary device on the demo desk is the ESP32-S3 in
+`../firmware-arduino/` — this ESP-IDF firmware is the fallback.
 
 ## What this does
 
@@ -14,15 +16,11 @@ The ESP32-C3 acts as a voice-activated agent endpoint. Loop:
 4. The gateway holds a registered ML-DSA-44 device identity, signs a Signet
    envelope on the device's behalf, and submits to the verifier.
 
-This is the **Plan B** path called out in PRD §15:
-
-> *If [pqm4 RISC-V Dilithium port] doesn't build for esp32c3: gateway-side signing
-> (device sends audio fingerprint, gateway signs). Do not burn hours debugging
-> the port.*
-
-The cryptography (ML-DSA-44 sign/verify) is identical in both paths — only the
-host of the signing key differs. On-device signing is the upgrade path
-documented in Phase 1.
+This is the **gateway-side-signing** path: if the pqm4 RISC-V Dilithium port
+doesn't build for `esp32c3`, the device just sends an audio fingerprint and the
+gateway signs. The cryptography (ML-DSA-44 sign/verify) is identical in both
+paths — only the host of the signing key differs. On-device signing is the
+Phase 2 upgrade.
 
 ## Layout
 

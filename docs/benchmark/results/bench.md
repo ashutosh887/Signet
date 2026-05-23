@@ -9,7 +9,7 @@ Synthetic agent-behaviour dataset, 3 seeds, n_legit=100, n_rogue=35.
 | Linear SVM on PCA-6 (Schuld critique) | 1.000 ± 0.000 |
 | Isolation Forest (legit-only) | 0.736 ± 0.012 |
 
-**Honest reading (PRD §13.3):** on this synthetic data the cold-start
+**Honest reading:** on this synthetic data the cold-start
 regime shows the quantum kernel within noise of classical RBF. The verifier
 auto-serves whichever wins on the held-out validation split at boot. The
 linear-PCA baseline is included to answer the Schuld critique
