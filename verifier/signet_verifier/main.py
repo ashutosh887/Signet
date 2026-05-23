@@ -44,7 +44,7 @@ load_dotenv()
 
 logger = logging.getLogger("signet")
 logging.basicConfig(
-    level=os.environ.get("SIGNET_LOG_LEVEL", "INFO"),
+    level=os.environ.get("SIGNET_LOG_LEVEL", "INFO").upper(),
     format='{"ts":"%(asctime)s","level":"%(levelname)s","msg":"%(message)s","logger":"%(name)s"}',
 )
 

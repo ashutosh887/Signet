@@ -26,7 +26,11 @@ documents the **Phase 0** hackathon deliverable.
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
+- [CLI](#cli)
 - [Verifier API](#verifier-api)
+- [Webhooks](#webhooks)
+- [Merkle audit log](#merkle-audit-log)
+- [Observability](#observability)
 - [Action envelope](#action-envelope)
 - [Cryptographic primitives](#cryptographic-primitives)
 - [Anomaly detection](#anomaly-detection)
@@ -80,6 +84,8 @@ JSON document signed with ML-DSA-44 (FIPS 204).
   every return value of a Python agent function
 - `delegate(parent, capabilities, ttl)` — issue capability-scoped child
   identities with a signed delegation envelope
+- `signet` CLI binary — `keygen / register / sign / verify / submit / revoke
+  / audit / agent / envelope`
 
 ### Verifier service (`verifier/`)
 
@@ -97,7 +103,14 @@ JSON document signed with ML-DSA-44 (FIPS 204).
 - Expiry validation on every envelope
 - WebSocket live stream (`/ws/stream`) — broadcasts every accepted envelope
   and revocation event to the dashboard
-- Quantum-kernel anomaly detector — trains on boot, scores every submission
+- Quantum-kernel anomaly detector with top-feature explainability
+- **Merkle audit log** — SHA3-256 leaves, on-demand inclusion proofs,
+  client-verifiable root
+- **Webhooks** — HMAC-SHA256-signed callbacks on envelope and anomaly events
+- **Prometheus `/metrics`** — request counters, latency histograms, anomaly
+  score distribution
+- **Optional X-API-Key auth** — opt-in via `SIGNET_API_KEYS`
+- Structured JSON logs via `SIGNET_LOG_LEVEL`
 - CORS-configurable, `.env`-driven
 
 ### Quantum anomaly detector (`verifier/signet_verifier/anomaly.py`)
@@ -174,20 +187,23 @@ Full diagram (Mermaid) in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ```
 signet/
-├── sdk-python/                 Python SDK — Identity, Envelope, wrap, client
+├── sdk-python/                 Python SDK — Identity, Envelope, CLI
 │   ├── pyproject.toml
 │   └── signet/
-│       ├── identity.py         ML-DSA-44 keygen + sign/verify (liboqs)
-│       ├── envelope.py         Canonical JSON envelope + sign helpers
-│       ├── client.py           HTTP client — register, submit, verify, revoke
-│       └── wrap.py             @wrap decorator + delegate()
+│       ├── identity.py         ML-DSA-44 + Ed25519 keygen, sign, verify
+│       ├── envelope.py         Canonical JSON envelope + hybrid signing
+│       ├── client.py           HTTP client — register/submit/verify/revoke/...
+│       ├── wrap.py             @wrap decorator + delegate()
+│       └── cli.py              `signet` argparse CLI
 │
 ├── verifier/                   FastAPI verifier service
 │   ├── pyproject.toml
 │   └── signet_verifier/
-│       ├── main.py             FastAPI app, endpoints, lifespan
-│       ├── db.py               SQLite schema + accessors
-│       ├── anomaly.py          PennyLane quantum kernel + RBF baseline
+│       ├── main.py             FastAPI app, endpoints, middleware, metrics
+│       ├── db.py               SQLite schema + accessors + migrations
+│       ├── anomaly.py          PennyLane quantum kernel + RBF baseline + explain
+│       ├── merkle.py           SHA3-256 Merkle log + inclusion proofs
+│       ├── webhooks.py         Outbound HMAC-signed event dispatcher
 │       └── stream.py           WebSocket broadcast hub
 │
 ├── dashboard/                  Next.js 16 + Tailwind v4 UI
@@ -219,6 +235,7 @@ signet/
 │   ├── RFC-DRAFT.md            IETF Internet-Draft outline (Phase 4)
 │   └── benchmark/              Reproducible quantum vs RBF AUC benchmark
 │
+├── .github/workflows/ci.yml    Build liboqs, install, SDK smoke + round-trip
 ├── CLAUDE.md                   Codebase guide for AI assistants
 └── README.md                   This file
 ```
@@ -332,25 +349,98 @@ Subsequent submissions return `Verdict(valid=False, reason="revoked")`.
 
 ---
 
+## CLI
+
+The SDK installs a `signet` entry point.
+
+```bash
+signet keygen --principal prn_acme_co --out agent.key
+signet register --key agent.key
+signet sign --key agent.key --action '{"type":"tool_call","name":"book_meeting","params":{}}' --out env.json
+signet submit env.json
+signet audit --limit 20
+signet revoke agt_01HXYZ --reason suspected_compromise
+signet agent agt_01HXYZ
+signet envelope env_01HXYZ
+```
+
+All commands accept `--verifier URL` (defaults to `http://localhost:8000`).
+
+---
+
 ## Verifier API
 
-| Method | Endpoint                          | Purpose                                     |
-| ------ | --------------------------------- | ------------------------------------------- |
-| GET    | `/health`                         | Liveness check                              |
-| POST   | `/v1/identities`                  | Register an agent's PQ + classical pubkeys  |
-| POST   | `/v1/envelopes/verify`            | Stateless verify (no log, no broadcast)     |
-| POST   | `/v1/envelopes/submit`            | Verify + log + score + broadcast            |
-| GET    | `/v1/envelopes/{envelope_id}`     | Fetch a single envelope by ID               |
-| POST   | `/v1/anomaly/score`               | Score an envelope against the agent window  |
-| GET    | `/v1/anomaly/report`              | Quantum vs RBF AUC report card              |
-| POST   | `/v1/agents/{agent_id}/revoke`    | Revoke an agent                             |
-| GET    | `/v1/agents`                      | List registered agents                      |
-| GET    | `/v1/agents/{agent_id}`           | Fetch agent metadata (keys stripped)        |
-| GET    | `/v1/audit?limit=N&agent_id=...`  | Paginated envelope log                      |
-| WS     | `/ws/stream`                      | Live envelope and revocation event stream   |
+| Method | Endpoint                                | Purpose                                           |
+| ------ | --------------------------------------- | ------------------------------------------------- |
+| GET    | `/health`                               | Liveness check                                    |
+| GET    | `/metrics`                              | Prometheus exposition                             |
+| POST   | `/v1/identities`                        | Register an agent's PQ + classical public keys    |
+| POST   | `/v1/envelopes/verify`                  | Stateless verify (no log, no broadcast)           |
+| POST   | `/v1/envelopes/submit`                  | Verify + log + score + broadcast                  |
+| GET    | `/v1/envelopes/{envelope_id}`           | Fetch a single envelope by ID                     |
+| GET    | `/v1/envelopes/{envelope_id}/proof`     | Merkle inclusion proof (SHA3-256)                 |
+| POST   | `/v1/anomaly/score`                     | Score an envelope and explain top features        |
+| GET    | `/v1/anomaly/report`                    | Quantum vs RBF AUC report card                    |
+| POST   | `/v1/agents/{agent_id}/revoke`          | Revoke an agent                                   |
+| GET    | `/v1/agents`                            | List registered agents                            |
+| GET    | `/v1/agents/{agent_id}`                 | Fetch agent metadata (keys stripped)              |
+| GET    | `/v1/audit?limit=N&agent_id=...`        | Paginated envelope log                            |
+| GET    | `/v1/audit/root`                        | Current Merkle root and tree size                 |
+| POST   | `/v1/webhooks`                          | Register a webhook URL + event filter             |
+| GET    | `/v1/webhooks`                          | List registered webhooks                          |
+| DELETE | `/v1/webhooks/{webhook_id}`             | Remove a webhook                                  |
+| WS     | `/ws/stream`                            | Live envelope and revocation event stream         |
 
 Pydantic models and response schemas are auto-published at `/docs` (Swagger UI)
 and `/openapi.json`.
+
+---
+
+## Webhooks
+
+Register a URL to receive POSTed JSON events. Optional `secret` enables
+HMAC-SHA256 request signing in the `X-Signet-Signature` header (format:
+`sha256=<hex>` over the raw request body).
+
+```bash
+curl -X POST http://localhost:8000/v1/webhooks \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://example.com/sink","events":["envelope.rejected","anomaly.detected","agent.revoked"],"secret":"shh"}'
+```
+
+Events emitted: `envelope.verified`, `envelope.rejected`, `agent.revoked`,
+`anomaly.detected` (fires when the anomaly score crosses 0.7). Use `["*"]` to
+subscribe to all events.
+
+---
+
+## Merkle audit log
+
+Every valid envelope is hashed with SHA3-256 (`H(0x00 || canonical_json)`),
+appended to an in-database leaf log, and assigned a sequential `leaf_index`.
+The Merkle tree is computed on demand with SHA3-256 internal nodes
+(`H(0x01 || left || right)`, duplicate-last for odd levels).
+
+```bash
+curl http://localhost:8000/v1/audit/root
+curl http://localhost:8000/v1/envelopes/env_01HXYZ/proof
+```
+
+The inclusion proof is verifiable client-side without trusting the verifier —
+see `verifier/signet_verifier/merkle.py::verify_proof`.
+
+---
+
+## Observability
+
+- **Prometheus exposition** at `/metrics`: `signet_requests_total{route,status}`,
+  `signet_envelopes_total{verdict}`, `signet_request_seconds`,
+  `signet_anomaly_score`.
+- **Structured JSON logs** to stdout; level via `SIGNET_LOG_LEVEL`.
+- **API key auth** is opt-in. Set `SIGNET_API_KEYS=<sha256-hash>,<sha256-hash>`
+  and load keys with `db.add_api_key(...)`; the middleware enforces
+  `X-API-Key` on all non-public routes (everything outside `/health`,
+  `/metrics`, `/openapi`, `/docs`, `/redoc`, `/ws/stream`).
 
 ---
 
