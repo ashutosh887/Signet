@@ -66,7 +66,9 @@ def _submit(identity: Identity, name: str, params: dict, verifier: str) -> dict:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--verifier", default="http://localhost:8000")
-    p.add_argument("--tenant", default="acme")
+    p.add_argument("--tenant", default=None,
+                   help="Override tenant; default is whatever the verifier resolves the policy POST to "
+                        "(i.e. 'default' when SIGNET_API_KEYS is unset).")
     p.add_argument("--warmup", type=int, default=8, help="legit envelopes per agent")
     args = p.parse_args()
 
@@ -74,7 +76,7 @@ def main() -> None:
     httpx.get(f"{V}/health", timeout=3).raise_for_status()
     print(f"verifier up at {V}")
 
-    print(f"\n[1/4] creating policy for tenant '{args.tenant}'")
+    print(f"\n[1/4] creating policy (tenant={args.tenant or 'default'})")
     pol = httpx.post(
         f"{V}/v1/policies",
         json={

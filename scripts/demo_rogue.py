@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sdk-python"))
 from signet import Envelope, Identity, register, revoke, submit
 
 
-VERIFIER = "http://127.0.0.1:8000"
+import os
+VERIFIER = os.environ.get("SIGNET_VERIFIER_URL", "http://127.0.0.1:8000")
 
 LEGIT_ACTIONS = (
     "book_meeting",
