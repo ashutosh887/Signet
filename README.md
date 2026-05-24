@@ -967,6 +967,5 @@ TypeScript SDK tests run separately: `cd sdk-ts && pnpm test`.
 
 Apache 2.0 — see [`LICENSE`](LICENSE).
 
-Built for the QuantumX Hackathon, May 23, 2026. Cites and builds on
-[akdeb/ElatoAI](https://github.com/akdeb/ElatoAI) as the ESP32 voice-agent
-architectural reference.
+Cites and builds on [akdeb/ElatoAI](https://github.com/akdeb/ElatoAI) as the
+ESP32 voice-agent architectural reference.

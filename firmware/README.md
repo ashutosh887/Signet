@@ -11,7 +11,7 @@ The ESP32-C3 acts as a voice-activated agent endpoint. Loop:
 1. Connect to Wi-Fi.
 2. Capture 16 kHz mono audio over I²S from a TRWS2014B (or equivalent) mic.
 3. Apply a 200 ms energy-threshold trigger (full ASR is out of scope for the
-   hackathon). On trigger, build a JSON payload with an audio fingerprint and
+   firmware tier). On trigger, build a JSON payload with an audio fingerprint and
    POST it to the **edge gateway** (`scripts/edge_gateway.py`).
 4. The gateway holds a registered ML-DSA-44 device identity, signs a Signet
    envelope on the device's behalf, and submits to the verifier.

@@ -1,4 +1,4 @@
-# Signet — Phase 1 Pitch Deck (bullets only)
+# Signet — Pitch Deck (bullets only)
 
 Six slides, ~5 minutes. Paste each block into Keynote / Slides / Pitch as one
 slide. Export a PDF backup before walking on stage.
@@ -112,11 +112,11 @@ flowchart LR
 - **Live demo right now** — ESP32-S3 button press → signed envelope · rogue
   agent flagged in ≤3 envelopes / ~6 s · one-click revoke · Merkle inclusion
   proof modal · WebSocket dashboard
-- **Phase 2 hackathon deliverables:** GitHub repo, architecture diagram,
-  working live demo, reproducible benchmark, deck PDF
-- **Post-hackathon:** PyPI release of `signet-agent`, npm publish of
-  `@signet/sdk`, pqm4 on-device signing, federation across verifiers via
-  Sparse Merkle Tree revocation roots
+- **Current deliverables:** GitHub repo, architecture diagram, working live
+  demo, reproducible benchmark, deck PDF
+- **Next:** PyPI release of `signet-agent`, npm publish of `@signet/sdk`,
+  pqm4 on-device signing, federation across verifiers via Sparse Merkle Tree
+  revocation roots
 - **6-month:** **IETF PQUIP Internet-Draft** submission (target IETF 121/122)
   + **USENIX Security** paper on quantum-kernel cold-start advantage
 - **Defensible quantum components · real product trajectory · open-source
@@ -137,7 +137,7 @@ flowchart LR
 - [ ] **Elato fork credit** on Slide 4
 - [ ] At least one number on **Slide 2** (100M agents · 2030 · Aug 2024)
 - [ ] USP slide has **4–5 punchy bullets**, not paragraphs
-- [ ] Roadmap goes beyond hackathon (**IETF, USENIX, PyPI, npm**)
+- [ ] Roadmap targets **IETF, USENIX, PyPI, npm**
 - [ ] **PDF backup exported** and on the demo laptop desktop
 
 ---

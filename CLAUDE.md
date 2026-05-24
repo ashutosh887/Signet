@@ -6,7 +6,7 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 Signet — a post-quantum cryptographic identity layer for AI agents. Pitch: *Auth0 for AI agents, born quantum-safe*. README.md is the canonical source of truth for what's built; `docs/DECK.md` is the pitch; `docs/ARCHITECTURE.md` is the system diagram; `docs/RFC-DRAFT.md` is the wire format spec.
 
-The hackathon shipped Phase 0 plus the Phase 1+ extensions the founder approved: multi-tenancy, HSM signer abstraction, TypeScript SDK, MCP/A2A middleware, policy engine, hybrid KEM, SLH-DSA root keys, Sparse Merkle Tree revocation, HMAC webhooks.
+The repo ships the Phase 0 core plus the Phase 1+ extensions the founder approved: multi-tenancy, HSM signer abstraction, TypeScript SDK, MCP/A2A middleware, policy engine, hybrid KEM, SLH-DSA root keys, Sparse Merkle Tree revocation, HMAC webhooks.
 
 ## What's shipped (current ground truth)
 
